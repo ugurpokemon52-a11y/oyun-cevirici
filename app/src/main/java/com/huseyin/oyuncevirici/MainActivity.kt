@@ -143,10 +143,10 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         root.addView(hostEdit)
-        val sizes = listOf("Küçük" to 24, "Orta" to 30, "Büyük" to 38, "Çok büyük" to 46)
+        val sizes = listOf("En küçük" to 14, "Çok küçük" to 17, "Küçük" to 20, "Orta" to 24, "Büyük" to 30, "Çok büyük" to 38)
         val sizeSpin = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, sizes.map { "TV yazı boyutu: ${it.first}" })
-            setSelection(sizes.indexOfFirst { it.second == Prefs.tvSize(this@MainActivity) }.coerceAtLeast(1))
+            setSelection(sizes.indexOfFirst { it.second == Prefs.tvSize(this@MainActivity) }.let { if (it < 0) 2 else it })
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
                     Prefs.setTvSize(this@MainActivity, sizes[pos].second)
@@ -165,6 +165,16 @@ class MainActivity : Activity() {
             }
         }
         root.addView(posSpin)
+        val widths = listOf("Satır genişliği: Dar (%60)" to 60, "Satır genişliği: Orta (%80)" to 80, "Satır genişliği: Geniş (%95)" to 95)
+        root.addView(Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, widths.map { it.first })
+            setSelection(widths.indexOfFirst { it.second == Prefs.tvWidth(this@MainActivity) }.coerceAtLeast(1))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
+                    Prefs.setTvWidth(this@MainActivity, widths[pos].second)
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        })
         val bgs = listOf("Arka plan: Açık" to 0x66, "Arka plan: Orta" to 0xAA, "Arka plan: Koyu" to 0xCC, "Arka plan: Tam koyu" to 0xF0)
         root.addView(Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, bgs.map { it.first })

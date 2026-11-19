@@ -71,7 +71,7 @@ object Prefs {
     fun tvHost(c: Context): String = sp(c).getString("tvHost", "") ?: ""
     fun setTvHost(c: Context, v: String) = sp(c).edit().putString("tvHost", v.trim()).apply()
 
-    fun tvSize(c: Context): Int = sp(c).getInt("tvSize", 30)
+    fun tvSize(c: Context): Int = sp(c).getInt("tvSize", 22)
     fun setTvSize(c: Context, v: Int) = sp(c).edit().putInt("tvSize", v).apply()
 
     /** "bottom" veya "top" */
@@ -103,6 +103,10 @@ object Prefs {
     fun setVisionSmart(c: Context, v: Boolean) = sp(c).edit().putBoolean("visionSmart", v).apply()
 
     // TV gorunumu
+    /** Altyazinin en fazla ekran genisliginin yuzde kaci olacagi */
+    fun tvWidth(c: Context): Int = sp(c).getInt("tvWidth", 80)
+    fun setTvWidth(c: Context, v: Int) = sp(c).edit().putInt("tvWidth", v).apply()
+
     fun tvBg(c: Context): Int = sp(c).getInt("tvBg", 0xCC)
     fun setTvBg(c: Context, v: Int) = sp(c).edit().putInt("tvBg", v).apply()
     fun tvMargin(c: Context): Int = sp(c).getInt("tvMargin", 40)

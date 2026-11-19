@@ -235,7 +235,7 @@ object TvLink {
         val o = JSONObject().put("t", "sub").put("text", text)
             .put("size", Prefs.tvSize(ctx)).put("pos", Prefs.tvPos(ctx))
             .put("bg", Prefs.tvBg(ctx)).put("margin", Prefs.tvMargin(ctx))
-            .put("bold", Prefs.tvBold(ctx))
+            .put("bold", Prefs.tvBold(ctx)).put("width", Prefs.tvWidth(ctx))
         if (Prefs.tvOrig(ctx) && original.isNotBlank()) o.put("orig", original)
         send(o)
     }

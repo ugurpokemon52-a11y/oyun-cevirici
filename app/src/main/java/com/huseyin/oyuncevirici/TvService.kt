@@ -52,6 +52,7 @@ class TvService : Service() {
     private var nsd: NsdManager? = null
     private var regListener: NsdManager.RegistrationListener? = null
     private var sub: TextView? = null
+    private var subHolder: FrameLayout? = null
     private var subLp: WindowManager.LayoutParams? = null
     private val autoHide = Runnable { hideSub() }
 
@@ -143,7 +144,8 @@ class TvService : Service() {
         when (o.optString("t")) {
             "sub" -> showSub(
                 o.optString("text"), o.optInt("size", 30), o.optString("pos", "bottom"),
-                o.optInt("bg", 0xCC), o.optInt("margin", 40), o.optBoolean("bold", false), o.optString("orig", "")
+                o.optInt("bg", 0xCC), o.optInt("margin", 40), o.optBoolean("bold", false), o.optString("orig", ""),
+                o.optInt("width", 80)
             )
             "clear" -> hideSub()
             "smart" -> showSmart(o.optJSONArray("items"))
@@ -176,7 +178,8 @@ class TvService : Service() {
 
     private fun showSub(
         text: String, sizeSp: Int, pos: String,
-        bg: Int = 0xCC, marginDp: Int = 40, bold: Boolean = false, orig: String = ""
+        bg: Int = 0xCC, marginDp: Int = 40, bold: Boolean = false, orig: String = "",
+        widthPct: Int = 80
     ) {
         if (text.isBlank()) {
             hideSub(); return
@@ -190,12 +193,20 @@ class TvService : Service() {
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setShadowLayer(4f, 0f, 0f, Color.BLACK)
-                val p = (14 * d).toInt()
+                val p = (10 * d).toInt()
                 setPadding(p * 2, p, p * 2, p)
-                maxWidth = (resources.displayMetrics.widthPixels * 0.85f).toInt()
             }
+            // Pencere tam genislikte: icerik kadar acilan pencerede Android once dar olcer
+            // ve yazi alt alta dikey kirilirdi. Yazi kutusu icerde ortalanir.
+            val holder = FrameLayout(this)
+            holder.addView(
+                tv, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_HORIZONTAL
+                )
+            )
             val lp = WindowManager.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -205,11 +216,12 @@ class TvService : Service() {
             lp.gravity = grav
             lp.y = (marginDp * d).toInt()
             try {
-                wm.addView(tv, lp)
+                wm.addView(holder, lp)
             } catch (e: Exception) {
                 return
             }
             sub = tv
+            subHolder = holder
             subLp = lp
         } else {
             val lp = subLp
@@ -217,15 +229,19 @@ class TvService : Service() {
             if (lp != null && (lp.gravity != grav || lp.y != y)) {
                 lp.gravity = grav
                 lp.y = y
-                try { wm.updateViewLayout(tv, lp) } catch (_: Exception) {}
+                subHolder?.let { h -> try { wm.updateViewLayout(h, lp) } catch (_: Exception) {} }
             }
         }
+        val dm = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm.defaultDisplay.getRealMetrics(dm)
+        tv.maxWidth = (dm.widthPixels * widthPct.coerceIn(40, 98) / 100f).toInt()
         tv.background = GradientDrawable().apply {
             cornerRadius = 10 * d
             setColor((bg.coerceIn(0, 255) shl 24) or 0x000000)
         }
         tv.setTypeface(null, if (bold) Typeface.BOLD else Typeface.NORMAL)
-        tv.textSize = sizeSp.coerceIn(16, 60).toFloat()
+        tv.textSize = sizeSp.coerceIn(10, 60).toFloat()
         tv.text = SubFormat.styled(text, orig.ifBlank { null })
         // Telefon baglantisi kopar da "temizle" gelmezse ekranda kalmasin
         main.removeCallbacks(autoHide)
@@ -234,7 +250,8 @@ class TvService : Service() {
 
     private fun hideSub() {
         main.removeCallbacks(autoHide)
-        sub?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        subHolder?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        subHolder = null
         sub = null
         subLp = null
     }
