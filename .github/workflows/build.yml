@@ -24,15 +24,19 @@ jobs:
           gradle-version: '8.9'
 
       - name: APK derle
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: gradle assembleMobilRelease assembleTvRelease --no-daemon --stacktrace
 
       - name: APK'yi adlandir
-        run: cp app/build/outputs/apk/release/app-release.apk OyunCevirici.apk
+        run: |
+          cp app/build/outputs/apk/mobil/release/app-mobil-release.apk OyunCevirici-Telefon.apk
+          cp app/build/outputs/apk/tv/release/app-tv-release.apk OyunCevirici-TV.apk
 
       - name: Surum (Release) olustur
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: Oyun Çevirici ${{ github.run_number }}
-          body: "Telefona indirmek için aşağıdaki OyunCevirici.apk dosyasına dokun."
-          files: OyunCevirici.apk
+          body: "Telefona: OyunCevirici-Telefon.apk • TV'ye: OyunCevirici-TV.apk"
+          files: |
+            OyunCevirici-Telefon.apk
+            OyunCevirici-TV.apk

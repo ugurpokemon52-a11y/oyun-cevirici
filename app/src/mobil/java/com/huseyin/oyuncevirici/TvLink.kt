@@ -20,8 +20,8 @@ import kotlin.concurrent.thread
  * altyazilari satir satir JSON olarak gonderir.
  */
 object TvLink {
-    const val SERVICE_TYPE = "_oyuncevirici._tcp"
-    const val PORT = 47321
+    const val SERVICE_TYPE = Net.SERVICE_TYPE
+    const val PORT = Net.PORT
 
     private val main = Handler(Looper.getMainLooper())
     private val exec = Executors.newSingleThreadExecutor()

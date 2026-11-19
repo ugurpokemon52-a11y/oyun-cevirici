@@ -101,7 +101,7 @@ class TvService : Service() {
             try {
                 val ss = ServerSocket()
                 ss.reuseAddress = true
-                ss.bind(InetSocketAddress(TvLink.PORT))
+                ss.bind(InetSocketAddress(Net.PORT))
                 server = ss
                 main.post { registerNsd(ss.localPort) }
                 while (!ss.isClosed) {
@@ -158,7 +158,7 @@ class TvService : Service() {
         nsd = m
         val info = NsdServiceInfo().apply {
             serviceName = "OyunCevirici-" + Build.MODEL.replace(Regex("[^A-Za-z0-9-]"), "").take(30)
-            serviceType = TvLink.SERVICE_TYPE
+            serviceType = Net.SERVICE_TYPE
             setPort(listenPort)
         }
         val l = object : NsdManager.RegistrationListener {
