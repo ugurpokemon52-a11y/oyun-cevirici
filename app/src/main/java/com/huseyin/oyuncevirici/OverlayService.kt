@@ -27,6 +27,8 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
+import android.speech.tts.TextToSpeech
 import android.util.DisplayMetrics
 import android.util.TypedValue
 import android.view.Display
@@ -47,6 +49,7 @@ import com.google.mlkit.nl.translate.Translator
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import java.util.Locale
 
 class OverlayService : Service() {
 
@@ -84,6 +87,10 @@ class OverlayService : Service() {
     private var recognizer: TextRecognizer? = null
     private var translator: Translator? = null
     private var mlLang = ""
+
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var fabBg: GradientDrawable? = null
 
     private var busy = false
     private var auto = false
@@ -146,9 +153,12 @@ class OverlayService : Service() {
         )
 
         ensureMl()
-        translator?.downloadModelIfNeeded()?.addOnFailureListener {
-            toast("Dil paketi yok. Uygulamayı açıp 1. adımı yap (internet gerekir).")
+        if (!Prefs.useGemini(this)) {
+            translator?.downloadModelIfNeeded()?.addOnFailureListener {
+                toast("Dil paketi yok. Uygulamayı açıp 1. adımı yap (internet gerekir).")
+            }
         }
+        if (Prefs.speak(this)) initTts()
 
         showFab()
         running = true
@@ -331,20 +341,73 @@ class OverlayService : Service() {
             toast("Ekranda yazı bulunamadı")
             return
         }
-        val tr = translator!!
         val lang = mlLang
-        tr.downloadModelIfNeeded()
-            .onSuccessTask { _ ->
-                Tasks.whenAllSuccess<String>(blocks.map { b -> tr.translate(Ml.clean(lang, b.text)) })
-            }
-            .addOnSuccessListener { list ->
-                done()
+        translateMany(blocks.map { Ml.clean(lang, it.text) }) { list, err ->
+            done()
+            if (list == null) {
+                toast("Çeviri hatası: $err")
+            } else {
                 showResults(blocks, list, origin)
             }
-            .addOnFailureListener { e ->
-                done()
-                toast("Çeviri hatası: ${e.message}\nUygulamada 1. adımı (dil paketi) yap.")
+        }
+    }
+
+    // ---------------- Ceviri motoru secimi (Gemini / cihaz ici) ----------------
+
+    private var lastAiErrorAt = 0L
+
+    private fun aiError(err: String?) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAiErrorAt > 15000) {
+            lastAiErrorAt = now
+            toast("Gemini hatası: $err\nBu sefer hızlı çeviri kullanıldı.")
+        }
+    }
+
+    private fun translateMany(srcs: List<String>, cb: (List<String>?, String?) -> Unit) {
+        if (Prefs.useGemini(this)) {
+            Gemini.translateList(Prefs.geminiKey(this), Prefs.geminiModel(this), Prefs.langName(this), srcs) { list, err ->
+                if (list != null) cb(list, null) else {
+                    aiError(err)
+                    localMany(srcs, cb)
+                }
             }
+        } else {
+            localMany(srcs, cb)
+        }
+    }
+
+    private fun localMany(srcs: List<String>, cb: (List<String>?, String?) -> Unit) {
+        ensureMl()
+        val tr = translator!!
+        tr.downloadModelIfNeeded()
+            .onSuccessTask { _ -> Tasks.whenAllSuccess<String>(srcs.map { s -> tr.translate(s) }) }
+            .addOnSuccessListener { cb(it, null) }
+            .addOnFailureListener { e ->
+                cb(null, "${e.message}\nHızlı çeviri için uygulamada 1. adımı (dil paketi) yap.")
+            }
+    }
+
+    private fun translateOne(src: String, cb: (String?, String?) -> Unit) {
+        if (Prefs.useGemini(this)) {
+            Gemini.translate(
+                Prefs.geminiKey(this), Prefs.geminiModel(this), Prefs.langName(this), src, history.toList()
+            ) { out, err ->
+                if (out != null) cb(out, null) else {
+                    aiError(err)
+                    localOne(src, cb)
+                }
+            }
+        } else {
+            localOne(src, cb)
+        }
+    }
+
+    private fun localOne(src: String, cb: (String?, String?) -> Unit) {
+        ensureMl()
+        translator!!.translate(src)
+            .addOnSuccessListener { cb(it, null) }
+            .addOnFailureListener { e -> cb(null, e.message) }
     }
 
     private fun done() {
@@ -400,11 +463,18 @@ class OverlayService : Service() {
 
     // ---------------- Otomatik mod ----------------
 
+    private var pendingText = ""
+    private var emptyTicks = 0
+    private val history = ArrayDeque<String>()
+    private val cache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 80
+    }
+
     private val autoTick = object : Runnable {
         override fun run() {
             if (!auto) return
             autoStep()
-            main.postDelayed(this, 1500)
+            main.postDelayed(this, 800)
         }
     }
 
@@ -413,19 +483,49 @@ class OverlayService : Service() {
         auto = !auto
         if (auto) {
             lastAutoText = ""
+            pendingText = ""
+            emptyTicks = 0
             hideResults()
             if (Prefs.region(this) == null) {
-                toast("Otomatik mod açık. İpucu: Menüden 'Bölge seç' ile diyalog kutusunu seçersen daha iyi çalışır.")
+                toast("Canlı çeviri açık. İpucu: Butona basılı tut → 'Bölge seç' ile sadece altyazı alanını seçersen çok daha iyi çalışır.")
             } else {
-                toast("Otomatik mod açık")
+                toast("Canlı çeviri açık")
             }
             main.post(autoTick)
         } else {
             main.removeCallbacks(autoTick)
             removeSubtitle()
-            toast("Otomatik mod kapalı")
+            tts?.stop()
+            toast("Canlı çeviri durdu")
         }
         updateFabLabel()
+    }
+
+    /** Karsilastirma icin: kucuk harf, sadece harf/rakam */
+    private fun norm(s: String): String {
+        val sb = StringBuilder()
+        for (ch in s.lowercase()) if (ch.isLetterOrDigit()) sb.append(ch)
+        return if (sb.length > 400) sb.substring(0, 400) else sb.toString()
+    }
+
+    /** OCR kucuk farklar uretebilir; %88 ve ustu benzerse ayni metin say */
+    private fun similar(a: String, b: String): Boolean {
+        if (a == b) return true
+        if (a.isEmpty() || b.isEmpty()) return false
+        val n = a.length
+        val m = b.length
+        if (abs(n - m) > max(n, m) * 0.12) return false
+        var prev = IntArray(m + 1) { it }
+        var cur = IntArray(m + 1)
+        for (i in 1..n) {
+            cur[0] = i
+            for (j in 1..m) {
+                val c = if (a[i - 1] == b[j - 1]) 0 else 1
+                cur[j] = min(min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + c)
+            }
+            val t = prev; prev = cur; cur = t
+        }
+        return 1.0 - prev[m].toDouble() / max(n, m) >= 0.88
     }
 
     private fun autoStep() {
@@ -442,33 +542,71 @@ class OverlayService : Service() {
                 ensureMl()
                 val lang = mlLang
                 recognizer!!.process(InputImage.fromBitmap(bmp, 0))
-                    .addOnSuccessListener { t ->
-                        val src = t.textBlocks.joinToString("\n") { Ml.clean(lang, it.text) }.trim()
-                        if (src.isEmpty() || src == lastAutoText) {
-                            busy = false
-                            return@addOnSuccessListener
-                        }
-                        lastAutoText = src
-                        translator!!.translate(src)
-                            .addOnSuccessListener { out ->
-                                busy = false
-                                if (auto) showSubtitle(out)
-                            }
-                            .addOnFailureListener { busy = false }
-                    }
+                    .addOnSuccessListener { t -> onLiveText(t.textBlocks.joinToString("\n") { Ml.clean(lang, it.text) }.trim()) }
                     .addOnFailureListener { busy = false }
+            }
+        }
+    }
+
+    private fun onLiveText(src: String) {
+        if (!auto) {
+            busy = false
+            return
+        }
+        // Yazi yok: birkac tur bos kalirsa seridi gizle
+        if (norm(src).length < 2) {
+            busy = false
+            emptyTicks++
+            if (emptyTicks >= 4 && subtitleView != null) {
+                removeSubtitle()
+                lastAutoText = ""
+                pendingText = ""
+            }
+            return
+        }
+        emptyTicks = 0
+        val n = norm(src)
+        // Zaten gosterilen metin
+        if (similar(n, norm(lastAutoText))) {
+            busy = false
+            return
+        }
+        // Yeni metin: harf harf yazilan altyazilar icin bir tur daha bekle, sabitlenince cevir
+        if (!similar(n, norm(pendingText))) {
+            pendingText = src
+            busy = false
+            return
+        }
+        lastAutoText = src
+        pendingText = ""
+        cache[n]?.let {
+            busy = false
+            showSubtitle(it)
+            return
+        }
+        translateOne(src) { out, err ->
+            busy = false
+            if (out != null) {
+                cache[n] = out
+                history.addLast(src)
+                while (history.size > 3) history.removeFirst()
+                if (auto) showSubtitle(out)
+            } else if (err != null) {
+                aiError(err)
             }
         }
     }
 
     private fun showSubtitle(s: String) {
         val d = density
+        if (Prefs.speak(this)) speak(s)
         if (subtitleView == null) {
             val tv = TextView(this).apply {
                 setTextColor(Color.WHITE)
-                textSize = 16f
+                textSize = 19f
+                gravity = Gravity.CENTER
                 setBackgroundColor(0xE6000000.toInt())
-                val p = (10 * d).toInt()
+                val p = (12 * d).toInt()
                 setPadding(p, p, p, p)
             }
             val lp = overlayParams(
@@ -509,7 +647,7 @@ class OverlayService : Service() {
                 shape = GradientDrawable.OVAL
                 setColor(0xDD1565C0.toInt())
                 setStroke((2 * d).toInt(), Color.WHITE)
-            }
+            }.also { fabBg = it }
         }
         // FLAG_SECURE: buton ekran goruntusunde siyah gorunur, yazisi cevrilmez
         val lp = overlayParams(size, size, touchable = true, secure = true)
@@ -551,7 +689,9 @@ class OverlayService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     main.removeCallbacks(longPress)
-                    if (!moved && !longFired) translateOnce()
+                    if (!moved && !longFired) {
+                        if (Prefs.tapLive(this)) toggleAuto() else translateOnce()
+                    }
                 }
                 MotionEvent.ACTION_CANCEL -> main.removeCallbacks(longPress)
             }
@@ -571,10 +711,11 @@ class OverlayService : Service() {
 
     private fun updateFabLabel() {
         fab?.text = when {
+            auto -> "Canlı"
             busy -> "…"
-            auto -> "Oto"
             else -> "Çevir"
         }
+        fabBg?.setColor(if (auto) 0xDD2E7D32.toInt() else 0xDD1565C0.toInt())
     }
 
     private fun setFabBusy(b: Boolean) {
@@ -606,14 +747,25 @@ class OverlayService : Service() {
                 setOnClickListener { action() }
             })
         }
-        item("✏️  Bölge seç (diyalog kutusu)") { startRegionSelect() }
+        item("✏️  Bölge seç (altyazı alanı)") { startRegionSelect() }
+        item("📋  Tek seferlik çevir (tüm yazılar yerinde)") {
+            hideMenu()
+            translateOnce()
+        }
         item("🖥️  Tüm ekranı çevir") {
             Prefs.setRegion(this, null)
             hideMenu()
             removeSubtitle()
             toast("Artık tüm ekran çevrilecek")
         }
-        item(if (auto) "⏸️  Otomatik modu kapat" else "▶️  Otomatik mod (sürekli çevir)") { toggleAuto() }
+        item(if (auto) "⏸️  Canlı çeviriyi durdur" else "▶️  Canlı çeviriyi başlat") { toggleAuto() }
+        item(if (Prefs.speak(this)) "🔇  Sesli okumayı kapat" else "🔊  Sesli okumayı aç") {
+            val on = !Prefs.speak(this)
+            Prefs.setSpeak(this, on)
+            if (on) initTts() else tts?.stop()
+            hideMenu()
+            toast(if (on) "Sesli okuma açık" else "Sesli okuma kapalı")
+        }
         item("❌  Çeviriciyi kapat") { stopSelf() }
         item("↩️  Vazgeç") { hideMenu() }
 
@@ -674,6 +826,26 @@ class OverlayService : Service() {
         regionView = null
     }
 
+    // ---------------- Sesli okuma ----------------
+
+    private fun initTts() {
+        if (tts != null) return
+        tts = TextToSpeech(applicationContext) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val r = tts?.setLanguage(Locale("tr", "TR")) ?: TextToSpeech.LANG_NOT_SUPPORTED
+                ttsReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED
+                if (!ttsReady) toast("Telefonda Türkçe ses paketi yok. Ayarlar → Metin okuma'dan Türkçe sesi indir.")
+            } else {
+                toast("Sesli okuma başlatılamadı")
+            }
+        }
+    }
+
+    private fun speak(s: String) {
+        if (tts == null) initTts()
+        if (ttsReady) tts?.speak(s, TextToSpeech.QUEUE_FLUSH, null, "cevirici")
+    }
+
     // ---------------- Yardimcilar ----------------
 
     private fun overlayParams(
@@ -727,6 +899,8 @@ class OverlayService : Service() {
         val p = projection
         projection = null
         try { p?.stop() } catch (_: Exception) {}
+        tts?.shutdown()
+        tts = null
         recognizer?.close()
         translator?.close()
         bgThread?.quitSafely()

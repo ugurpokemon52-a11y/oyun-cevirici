@@ -32,6 +32,28 @@ object Prefs {
     fun lang(c: Context): String = sp(c).getString("lang", "en") ?: "en"
     fun setLang(c: Context, v: String) = sp(c).edit().putString("lang", v).apply()
 
+    fun langName(c: Context): String = LANGS.firstOrNull { it.first == lang(c) }?.second ?: "İngilizce"
+
+    fun geminiKey(c: Context): String = sp(c).getString("gkey", "") ?: ""
+    fun setGeminiKey(c: Context, v: String) = sp(c).edit().putString("gkey", v.trim()).apply()
+
+    fun geminiModel(c: Context): String =
+        (sp(c).getString("gmodel", "") ?: "").ifBlank { Gemini.DEFAULT_MODEL }
+    fun setGeminiModel(c: Context, v: String) = sp(c).edit().putString("gmodel", v.trim()).apply()
+
+    /** true: Gemini (yapay zeka), false: cihaz ici hizli ceviri */
+    fun useGemini(c: Context): Boolean = sp(c).getBoolean("useGemini", false) && geminiKey(c).isNotBlank()
+    fun useGeminiRaw(c: Context): Boolean = sp(c).getBoolean("useGemini", false)
+    fun setUseGemini(c: Context, v: Boolean) = sp(c).edit().putBoolean("useGemini", v).apply()
+
+    /** true: butona dokununca canli (surekli) ceviri acilir/kapanir */
+    fun tapLive(c: Context): Boolean = sp(c).getBoolean("tapLive", true)
+    fun setTapLive(c: Context, v: Boolean) = sp(c).edit().putBoolean("tapLive", v).apply()
+
+    /** Ceviriyi Turkce sesli oku */
+    fun speak(c: Context): Boolean = sp(c).getBoolean("speak", false)
+    fun setSpeak(c: Context, v: Boolean) = sp(c).edit().putBoolean("speak", v).apply()
+
     /** Ceviri bolgesi, ekran oranlari olarak (0..1). null = tum ekran */
     fun region(c: Context): RectF? {
         val s = sp(c)

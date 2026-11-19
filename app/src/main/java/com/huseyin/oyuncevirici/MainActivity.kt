@@ -4,7 +4,13 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.media.projection.MediaProjectionManager
+import android.text.InputType
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -55,7 +61,60 @@ class MainActivity : Activity() {
         }
         root.addView(spinner)
 
-        root.addView(button("1) Dil paketini indir (ilk seferde, internet gerekir)") { downloadModel() })
+        // ---- Ceviri motoru ----
+        root.addView(header("Çeviri türü", pad))
+        val group = RadioGroup(this)
+        val rbFast = RadioButton(this).apply { id = View.generateViewId(); text = "Hızlı (telefonda, internetsiz)" }
+        val rbAi = RadioButton(this).apply { id = View.generateViewId(); text = "Yapay zekâ – Gemini (daha kaliteli, internet gerekir)" }
+        group.addView(rbFast)
+        group.addView(rbAi)
+        group.check(if (Prefs.useGeminiRaw(this)) rbAi.id else rbFast.id)
+        group.setOnCheckedChangeListener { _, checked ->
+            Prefs.setUseGemini(this, checked == rbAi.id)
+            updateStatus()
+        }
+        root.addView(group)
+
+        val keyEdit = EditText(this).apply {
+            hint = "Gemini API anahtarı (AIza…)"
+            setText(Prefs.geminiKey(this@MainActivity))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            isSingleLine = true
+        }
+        val modelEdit = EditText(this).apply {
+            hint = "Model (boş bırakırsan: ${Gemini.DEFAULT_MODEL})"
+            setText(Prefs.geminiModel(this@MainActivity))
+            isSingleLine = true
+        }
+        root.addView(keyEdit)
+        root.addView(modelEdit)
+        root.addView(button("Anahtarı kaydet ve dene") {
+            Prefs.setGeminiKey(this, keyEdit.text.toString())
+            Prefs.setGeminiModel(this, modelEdit.text.toString())
+            modelEdit.setText(Prefs.geminiModel(this))
+            testGemini()
+        })
+        root.addView(TextView(this).apply {
+            textSize = 13f
+            text = "Ücretsiz anahtar: aistudio.google.com/apikey adresinden \"Create API key\". " +
+                "Yazı değişmedikçe tekrar istek gönderilmez, kota az harcanır."
+        })
+
+        // ---- Calisma sekli ----
+        root.addView(header("Çalışma şekli", pad))
+        root.addView(CheckBox(this).apply {
+            text = "Butona dokununca CANLI çeviri başlasın (yazı değiştikçe kendiliğinden çevirir, tekrar dokununca durur)"
+            isChecked = Prefs.tapLive(this@MainActivity)
+            setOnCheckedChangeListener { _, b -> Prefs.setTapLive(this@MainActivity, b) }
+        })
+        root.addView(CheckBox(this).apply {
+            text = "Çeviriyi Türkçe sesli oku"
+            isChecked = Prefs.speak(this@MainActivity)
+            setOnCheckedChangeListener { _, b -> Prefs.setSpeak(this@MainActivity, b) }
+        })
+
+        root.addView(header("Başlatma", pad))
+        root.addView(button("1) Dil paketini indir (hızlı çeviri için, ilk seferde)") { downloadModel() })
         root.addView(button("2) Diğer uygulamaların üstünde gösterme izni ver") {
             startActivity(
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
@@ -82,12 +141,11 @@ class MainActivity : Activity() {
                 NASIL KULLANILIR
                 • Başlat'a bas, açılan pencerede "Tüm ekran"ı seç.
                 • Oyunu aç. Ekranda mavi "Çevir" butonu çıkar.
-                • Butona dokun: ekrandaki yazılar Türkçe olarak yerlerinin üstünde gösterilir. Kapatmak için ekrana dokun.
+                • İlk iş: butona BASILI TUT → "Bölge seç" → altyazının çıktığı alanı parmağınla çiz. Bunu oyun başına bir kez yapman yeter.
+                • Butona dokun: CANLI çeviri başlar (buton yeşil olur). Altyazı değiştikçe Türkçesi ekranın üstünde/altında bir şeritte çıkar. Tekrar dokununca durur.
+                • Menüdeki "Tek seferlik çevir" ekrandaki bütün yazıları (menü, envanter vb.) yerlerinin üstünde çevirir. Kapatmak için ekrana dokun.
                 • Butonu sürükleyerek yerini değiştirebilirsin.
-                • Butona basılı tut: menü açılır.
-                   – Bölge seç: Sadece diyalog kutusunu çiz, daha hızlı ve temiz çevirir.
-                   – Otomatik mod: Seçili bölgedeki yazı değiştikçe kendiliğinden çevirir, çeviri şerit olarak gösterilir.
-                • Dili değiştirdiysen yeni dilin paketini de 1. adımla indir.
+                • Hızlı çeviride dili değiştirirsen yeni dilin paketini 1. adımla indir.
             """.trimIndent()
         })
 
@@ -112,13 +170,46 @@ class MainActivity : Activity() {
             setOnClickListener { onClick() }
         }
 
+    private fun header(t: String, pad: Int): TextView = TextView(this).apply {
+        text = t
+        textSize = 17f
+        setTypeface(typeface, Typeface.BOLD)
+        setPadding(0, pad, 0, pad / 3)
+    }
+
     private fun updateStatus() {
         if (!::status.isInitialized) return
         val izin = if (Settings.canDrawOverlays(this)) "verildi ✓" else "VERİLMEDİ ✗"
         val calisma = if (OverlayService.running) "çalışıyor ✓" else "kapalı"
-        val dil = LANGS.firstOrNull { it.first == Prefs.lang(this) }?.second ?: "?"
+        val dil = Prefs.langName(this)
         val bolge = if (Prefs.region(this) == null) "tüm ekran" else "seçili bölge"
-        status.text = "Dil: $dil → Türkçe\nÜstte gösterme izni: $izin\nÇevirici: $calisma\nÇeviri alanı: $bolge"
+        val motor = when {
+            Prefs.useGemini(this) -> "Yapay zekâ (${Prefs.geminiModel(this)})"
+            Prefs.useGeminiRaw(this) -> "Yapay zekâ seçili ama ANAHTAR YOK → hızlı çeviri kullanılacak"
+            else -> "Hızlı (telefonda)"
+        }
+        status.text = "Dil: $dil → Türkçe\nÇeviri: $motor\nÜstte gösterme izni: $izin\nÇevirici: $calisma\nÇeviri alanı: $bolge"
+    }
+
+    private fun testGemini() {
+        val key = Prefs.geminiKey(this)
+        if (key.isBlank()) {
+            Toast.makeText(this, "Önce anahtarı yapıştır", Toast.LENGTH_SHORT).show()
+            return
+        }
+        status.text = "Gemini deneniyor…"
+        Gemini.translate(
+            key, Prefs.geminiModel(this), "İngilizce",
+            "Stay close, partner. The bandits are hiding behind those rocks.", emptyList()
+        ) { out, err ->
+            if (out != null) {
+                Toast.makeText(this, "Çalışıyor ✓", Toast.LENGTH_SHORT).show()
+                updateStatus()
+                status.append("\n\nDeneme çevirisi:\n$out")
+            } else {
+                status.text = "Gemini hatası: $err"
+            }
+        }
     }
 
     private fun downloadModel() {
