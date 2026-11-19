@@ -86,6 +86,22 @@ object Prefs {
     fun glossary(c: Context): String = sp(c).getString("gloss", "") ?: ""
     fun setGlossary(c: Context, v: String) = sp(c).edit().putString("gloss", v).apply()
 
+    /** Oyun turu / uslup notu (Gemini'ye baglam olarak gider) */
+    fun tone(c: Context): String = sp(c).getString("tone", "") ?: ""
+    fun setTone(c: Context, v: String) = sp(c).edit().putString("tone", v.trim()).apply()
+
+    /** Canli taramada iki kare arasi bekleme (ms) */
+    fun scanMs(c: Context): Int = sp(c).getInt("scanMs", 800)
+    fun setScanMs(c: Context, v: Int) = sp(c).edit().putInt("scanMs", v).apply()
+
+    /** Harf harf yazilan altyazilarda yazinin tamamlanmasini bekle */
+    fun waitStable(c: Context): Boolean = sp(c).getBoolean("waitStable", true)
+    fun setWaitStable(c: Context, v: Boolean) = sp(c).edit().putBoolean("waitStable", v).apply()
+
+    /** Akilli ekranda goruntuyu dogrudan Gemini'ye gonder (OCR yerine) */
+    fun visionSmart(c: Context): Boolean = sp(c).getBoolean("visionSmart", true)
+    fun setVisionSmart(c: Context, v: Boolean) = sp(c).edit().putBoolean("visionSmart", v).apply()
+
     // TV gorunumu
     fun tvBg(c: Context): Int = sp(c).getInt("tvBg", 0xCC)
     fun setTvBg(c: Context, v: Int) = sp(c).edit().putInt("tvBg", v).apply()
@@ -126,13 +142,14 @@ object Prefs {
         setLang(c, p.lang)
         setRegionRaw(c, p.region)
         setGlossary(c, p.glossary)
+        setTone(c, p.tone)
         setActiveProfile(c, p.name)
     }
 
     /** Gecerli ayarlari bu adla profile kaydet (varsa ustune yaz) */
     fun saveCurrentAsProfile(c: Context, name: String) {
         val list = profiles(c)
-        val p = GameProfile(name.trim(), lang(c), region(c), glossary(c))
+        val p = GameProfile(name.trim(), lang(c), region(c), glossary(c), tone(c))
         val i = list.indexOfFirst { it.name == p.name }
         if (i >= 0) list[i] = p else list.add(p)
         saveProfiles(c, list)
@@ -202,9 +219,11 @@ object Ml {
         if (lang == "ja" || lang == "zh") s.replace("\n", "") else s.replace("\n", " ")
 }
 
-data class GameProfile(val name: String, val lang: String, val region: RectF?, val glossary: String) {
+data class GameProfile(
+    val name: String, val lang: String, val region: RectF?, val glossary: String, val tone: String = ""
+) {
     fun toJson(): JSONObject {
-        val o = JSONObject().put("name", name).put("lang", lang).put("gloss", glossary)
+        val o = JSONObject().put("name", name).put("lang", lang).put("gloss", glossary).put("tone", tone)
         if (region != null) {
             o.put("rl", region.left.toDouble()).put("rt", region.top.toDouble())
                 .put("rr", region.right.toDouble()).put("rb", region.bottom.toDouble())
@@ -218,7 +237,9 @@ data class GameProfile(val name: String, val lang: String, val region: RectF?, v
                 o.getDouble("rl").toFloat(), o.getDouble("rt").toFloat(),
                 o.getDouble("rr").toFloat(), o.getDouble("rb").toFloat()
             ) else null
-            return GameProfile(o.optString("name"), o.optString("lang", "en"), r, o.optString("gloss", ""))
+            return GameProfile(
+                o.optString("name"), o.optString("lang", "en"), r, o.optString("gloss", ""), o.optString("tone", "")
+            )
         }
     }
 }

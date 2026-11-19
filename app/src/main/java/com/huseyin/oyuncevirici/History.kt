@@ -84,9 +84,18 @@ object SubFormat {
     // En fazla 3 kelimelik, 28 karakterlik isim ve ardindan ":"
     private val speaker = Regex("^\\s*([\\p{L}][\\p{L}\\p{N}.'\\-]*(?: [\\p{L}\\p{N}.'\\-]+){0,2}):\\s+")
 
-    fun color(name: String): Int = palette[abs(name.lowercase().hashCode()) % palette.size]
+    // Acik zemin icin koyu tonlar (gecmis ekrani)
+    private val paletteLight = intArrayOf(
+        0xFFE65100.toInt(), 0xFF0277BD.toInt(), 0xFF2E7D32.toInt(),
+        0xFFC62828.toInt(), 0xFF6A1B9A.toInt(), 0xFF4E342E.toInt(), 0xFF00695C.toInt()
+    )
 
-    fun styled(text: String, original: String? = null): CharSequence {
+    fun color(name: String, light: Boolean = false): Int {
+        val p = if (light) paletteLight else palette
+        return p[abs(name.lowercase().hashCode()) % p.size]
+    }
+
+    fun styled(text: String, original: String? = null, light: Boolean = false): CharSequence {
         val sb = SpannableStringBuilder()
         text.split("\n").forEachIndexed { i, line ->
             if (i > 0) sb.append("\n")
@@ -95,7 +104,7 @@ object SubFormat {
                 val name = m.groupValues[1]
                 val start = sb.length
                 sb.append(name).append(":")
-                sb.setSpan(ForegroundColorSpan(color(name)), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(ForegroundColorSpan(color(name, light)), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 sb.setSpan(StyleSpan(Typeface.BOLD), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 sb.append(" ").append(line.substring(m.range.last + 1))
             } else {

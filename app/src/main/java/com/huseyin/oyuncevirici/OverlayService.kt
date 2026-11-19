@@ -311,12 +311,33 @@ class OverlayService : Service() {
                 val game = gameRect(full)
                 val bmp = Bitmap.createBitmap(full, game.left, game.top, game.width(), game.height())
                 val origin = Point(game.left, game.top)
-                engine.recognizer().process(InputImage.fromBitmap(bmp, 0))
-                    .addOnSuccessListener { text -> translateBlocks(text, origin, game.width(), game.height()) }
-                    .addOnFailureListener { e ->
-                        done()
-                        toast("Yazı okunamadı: ${e.message}")
+                if (Prefs.useGemini(this) && Prefs.visionSmart(this)) {
+                    // Goruntuyu dogrudan Gemini'ye gonder
+                    Gemini.translateImage(GCfg.from(this), bmp) { blocks, err ->
+                        if (blocks != null) {
+                            done()
+                            if (blocks.isEmpty()) {
+                                toast("Ekranda yazı bulunamadı")
+                                return@translateImage
+                            }
+                            val gw = bmp.width
+                            val gh = bmp.height
+                            val placed = blocks.map { v ->
+                                val r = Rect(
+                                    (v.box.left * gw).toInt(), (v.box.top * gh).toInt(),
+                                    (v.box.right * gw).toInt(), (v.box.bottom * gh).toInt()
+                                )
+                                Placed(r, min(r.height().toFloat(), gh * 0.045f), v.text)
+                            }
+                            presentSmart(placed, origin, gw, gh)
+                        } else {
+                            toast("Gemini görüntüyü okuyamadı ($err), telefonun okuma motoru deneniyor…")
+                            ocrSmart(bmp, origin)
+                        }
                     }
+                } else {
+                    ocrSmart(bmp, origin)
+                }
             }
         }, if (hadOverlay) 250L else 60L)
     }
@@ -340,6 +361,29 @@ class OverlayService : Service() {
         }
     }
 
+    /** Ekrandaki bir yazi: kutu kirpilmis oyun goruntusune gore piksel, lineH satir yuksekligi */
+    private data class Placed(val box: Rect, val lineH: Float, val text: String)
+
+    private fun ocrSmart(bmp: Bitmap, origin: Point) {
+        engine.recognizer().process(InputImage.fromBitmap(bmp, 0))
+            .addOnSuccessListener { text -> translateBlocks(text, origin, bmp.width, bmp.height) }
+            .addOnFailureListener { e ->
+                done()
+                toast("Yazı okunamadı: ${e.message}")
+            }
+    }
+
+    /** Telefonda ve TV'de yerinde goster */
+    private fun presentSmart(placed: List<Placed>, origin: Point, gw: Int, gh: Int) {
+        showResults(placed, origin)
+        TvLink.sendSmart(this, placed.map { p ->
+            SmartItem(
+                p.box.left.toFloat() / gw, p.box.top.toFloat() / gh, p.box.width().toFloat() / gw,
+                p.lineH / gh, p.text
+            )
+        })
+    }
+
     private fun translateBlocks(text: Text, origin: Point, gw: Int, gh: Int) {
         val blocks = text.textBlocks.filter { it.boundingBox != null && it.text.isNotBlank() }
         if (blocks.isEmpty()) {
@@ -353,16 +397,11 @@ class OverlayService : Service() {
             if (list == null) {
                 toast("Çeviri hatası: $err")
             } else {
-                showResults(blocks, list, origin)
-                // TV'de ayni yazilari oyunun ustunde, yerlerinde goster
-                val items = blocks.mapIndexedNotNull { i, b ->
+                val placed = blocks.mapIndexedNotNull { i, b ->
                     val box = b.boundingBox ?: return@mapIndexedNotNull null
-                    SmartItem(
-                        box.left.toFloat() / gw, box.top.toFloat() / gh, box.width().toFloat() / gw,
-                        box.height().toFloat() / max(1, b.lines.size) / gh, list.getOrElse(i) { "" }
-                    )
+                    Placed(box, box.height().toFloat() / max(1, b.lines.size), list.getOrElse(i) { "" })
                 }
-                TvLink.sendSmart(this, items)
+                presentSmart(placed, origin, gw, gh)
             }
         }
     }
@@ -373,7 +412,7 @@ class OverlayService : Service() {
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private fun showResults(blocks: List<Text.TextBlock>, tr: List<String>, origin: Point) {
+    private fun showResults(items: List<Placed>, origin: Point) {
         hideResults()
         val root = FrameLayout(this)
         root.setOnClickListener { hideResults() }
@@ -389,10 +428,10 @@ class OverlayService : Service() {
         root.post {
             val loc = IntArray(2)
             root.getLocationOnScreen(loc)
-            blocks.forEachIndexed { i, b ->
-                val box = b.boundingBox ?: return@forEachIndexed
+            items.forEach { item ->
+                val box = item.box
                 val tv = TextView(this).apply {
-                    text = SubFormat.styled(tr.getOrElse(i) { "" })
+                    text = SubFormat.styled(item.text)
                     setTextColor(Color.WHITE)
                     background = GradientDrawable().apply {
                         cornerRadius = 6 * d
@@ -401,7 +440,7 @@ class OverlayService : Service() {
                     }
                     val p = (5 * d).toInt()
                     setPadding(p, p / 2, p, p / 2)
-                    val lineH = box.height().toFloat() / max(1, b.lines.size)
+                    val lineH = item.lineH
                     setTextSize(TypedValue.COMPLEX_UNIT_PX, (lineH * 0.72f).coerceIn(12 * d, 22 * d))
                 }
                 val w = min(max(box.width(), (160 * d).toInt()), root.width)
@@ -425,7 +464,7 @@ class OverlayService : Service() {
         override fun run() {
             if (!auto) return
             autoStep()
-            main.postDelayed(this, 800)
+            main.postDelayed(this, Prefs.scanMs(this@OverlayService).toLong())
         }
     }
 

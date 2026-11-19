@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedWriter
@@ -12,6 +13,7 @@ import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.Executors
+import kotlin.concurrent.thread
 
 /**
  * Telefon tarafi: TV'deki aliciyi ayni Wi-Fi'da otomatik bulur (NSD) ve
@@ -39,6 +41,27 @@ object TvLink {
     private var socket: Socket? = null
     private var out: BufferedWriter? = null
 
+    // Baglanti kontrolu: 4 sn'de bir ping, 12 sn yanit gelmezse koptu say
+    @Volatile private var lastPong = 0L
+    private var pinging = false
+    private val pinger = object : Runnable {
+        override fun run() {
+            if (connected) {
+                if (SystemClock.elapsedRealtime() - lastPong > 12000) {
+                    exec.execute {
+                        closeSock()
+                        ensureConnected()
+                    }
+                } else {
+                    send(JSONObject().put("t", "ping"))
+                }
+            } else if (host != null) {
+                exec.execute { ensureConnected() }
+            }
+            main.postDelayed(this, 4000)
+        }
+    }
+
     /** Durum degisince ana is parcaciginda cagrilir */
     var onStatus: (() -> Unit)? = null
 
@@ -52,6 +75,10 @@ object TvLink {
     fun start(ctx: Context) {
         appCtx = ctx.applicationContext
         if (!Prefs.tvSend(ctx)) return
+        if (!pinging) {
+            pinging = true
+            main.postDelayed(pinger, 4000)
+        }
         val manual = Prefs.tvHost(ctx)
         if (manual.isNotBlank()) {
             stopDiscovery()
@@ -144,6 +171,19 @@ object TvLink {
             s.tcpNoDelay = true
             socket = s
             out = BufferedWriter(OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8))
+            lastPong = SystemClock.elapsedRealtime()
+            // TV'den gelen yanitlari (pong) oku
+            thread(name = "tv-okuyucu", isDaemon = true) {
+                try {
+                    val r = s.getInputStream().bufferedReader(Charsets.UTF_8)
+                    while (true) {
+                        r.readLine() ?: break
+                        lastPong = SystemClock.elapsedRealtime()
+                    }
+                } catch (_: Exception) {
+                }
+                exec.execute { if (socket === s) closeSock() }
+            }
             connected = true
             notifyStatus()
             true

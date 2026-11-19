@@ -12,6 +12,9 @@ import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognizer
 import java.util.Locale
+import java.io.File
+import java.util.concurrent.Executors
+import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -40,32 +43,38 @@ class LiveEngine(
     private var emptyTicks = 0
     private var showing = false
     private val history = ArrayDeque<String>()
-    private val cache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 80
-    }
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var lastAiErrorAt = 0L
 
-    private var glossaryUsed = ""
     private var seqNo = 0
     private var finalSeq = -1
 
+    // Kare farki: goruntu degismediyse OCR'i tekrar calistirma
+    private var lastSig: IntArray? = null
+    private var lastOcr: String? = null
+
     fun ensureMl() {
         val l = Prefs.lang(ctx)
-        val g = Prefs.glossary(ctx)
-        if (g != glossaryUsed) {
-            glossaryUsed = g
-            cache.clear()
-        }
+        // Profil/dil/sozluk/uslup basina ayri kalici onbellek
+        DiskCache.use(
+            ctx, Prefs.activeProfile(ctx) + "|" + l + "|" + Prefs.glossary(ctx).hashCode() + "|" + Prefs.tone(ctx).hashCode()
+        )
         if (l == lang && recognizer != null && translator != null) return
         recognizer?.close()
         translator?.close()
         recognizer = Ml.recognizer(l)
         translator = Ml.translator(l)
         lang = l
-        cache.clear()
+        lastOcr = null
+        lastSig = null
+    }
+
+    /** Onbellekten: Gemini aciksa sadece Gemini cevirileri kabul edilir */
+    private fun cached(n: String): String? {
+        val (isAi, text) = DiskCache.get(n) ?: return null
+        return if (!Prefs.useGemini(ctx) || isAi) text else null
     }
 
     fun recognizer(): TextRecognizer {
@@ -77,6 +86,8 @@ class LiveEngine(
         lastShown = ""
         pending = ""
         emptyTicks = 0
+        lastSig = null
+        lastOcr = null
     }
 
     /** Bir kareyi isle. Mesgulse kareyi atlar ve false dondurur. */
@@ -84,12 +95,48 @@ class LiveEngine(
         if (busy) return false
         busy = true
         ensureMl()
+        val sig = signature(bmp)
+        val prev = lastSig
+        lastSig = sig
+        val prevText = lastOcr
+        if (prev != null && prevText != null && sameFrame(prev, sig)) {
+            // Goruntu ayni: OCR'a gerek yok, onceki sonucu tekrar kullan (pil ve isinma tasarrufu)
+            onText(prevText)
+            return true
+        }
         val l = lang
         recognizer!!.process(InputImage.fromBitmap(bmp, 0))
             .addOnSuccessListener { t ->
-                onText(t.textBlocks.joinToString("\n") { Ml.clean(l, it.text) }.trim())
+                val txt = t.textBlocks.joinToString("\n") { Ml.clean(l, it.text) }.trim()
+                lastOcr = txt
+                onText(txt)
             }
-            .addOnFailureListener { busy = false }
+            .addOnFailureListener { busy = false; lastSig = null }
+        return true
+    }
+
+    /** Kucultulmus gri tonlu imza (en fazla 96 x 54 hucre) */
+    private fun signature(b: Bitmap): IntArray {
+        val w = 96
+        val h = (96f * b.height / b.width).toInt().coerceIn(6, 54)
+        val small = Bitmap.createScaledBitmap(b, w, h, true)
+        val px = IntArray(w * h)
+        small.getPixels(px, 0, w, 0, 0, w, h)
+        if (small !== b) small.recycle()
+        for (i in px.indices) {
+            val c = px[i]
+            px[i] = (((c shr 16) and 0xFF) * 3 + ((c shr 8) and 0xFF) * 6 + (c and 0xFF)) / 10
+        }
+        return px
+    }
+
+    private fun sameFrame(a: IntArray, b: IntArray): Boolean {
+        if (a.size != b.size) return false
+        var changed = 0
+        for (i in a.indices) if (abs(a[i] - b[i]) > 14) {
+            changed++
+            if (changed >= 3) return false
+        }
         return true
     }
 
@@ -111,8 +158,8 @@ class LiveEngine(
             busy = false
             return
         }
-        // Harf harf yazilan altyazilar icin: ayni metin iki kez gorulunce cevir
-        if (!similar(n, norm(pending))) {
+        // Harf harf yazilan altyazilar icin: ayni metin iki kez gorulunce cevir (ayardan kapatilabilir)
+        if (Prefs.waitStable(ctx) && !similar(n, norm(pending))) {
             pending = src
             busy = false
             return
@@ -120,7 +167,7 @@ class LiveEngine(
         lastShown = src
         pending = ""
         val seq = ++seqNo
-        cache[n]?.let {
+        cached(n)?.let {
             busy = false
             show(it, src, final = true)
             finalSeq = seq
@@ -139,12 +186,9 @@ class LiveEngine(
                 }
             }
             // 2) Gemini cevirisi gelince onizlemenin yerine gecer
-            Gemini.translate(
-                Prefs.geminiKey(ctx), Prefs.geminiModel(ctx), Prefs.langName(ctx), Prefs.glossary(ctx),
-                src, history.toList()
-            ) { out, err ->
+            Gemini.translate(GCfg.from(ctx), src, history.toList()) { out, err ->
                 if (out != null) {
-                    cache[n] = out
+                    DiskCache.put(ctx, n, out, ai = true)
                     remember(src)
                     if (seq == seqNo) {
                         finalSeq = seq
@@ -173,7 +217,7 @@ class LiveEngine(
             localOne(src) { out, _ ->
                 busy = false
                 if (out != null) {
-                    cache[n] = out
+                    DiskCache.put(ctx, n, out, ai = false)
                     remember(src)
                     finalSeq = seq
                     show(out, src, final = true)
@@ -216,7 +260,7 @@ class LiveEngine(
 
     fun translateMany(srcs: List<String>, cb: (List<String>?, String?) -> Unit) {
         if (Prefs.useGemini(ctx)) {
-            Gemini.translateList(Prefs.geminiKey(ctx), Prefs.geminiModel(ctx), Prefs.langName(ctx), Prefs.glossary(ctx), srcs) { list, err ->
+            Gemini.translateList(GCfg.from(ctx), srcs) { list, err ->
                 if (list != null) cb(list, null) else {
                     aiError(err)
                     localMany(srcs, cb)
@@ -321,6 +365,7 @@ class LiveEngine(
     }
 
     fun close() {
+        DiskCache.flush(ctx)
         if (showing) TvLink.sendClear()
         tts?.shutdown()
         tts = null
@@ -328,5 +373,67 @@ class LiveEngine(
         translator?.close()
         recognizer = null
         translator = null
+    }
+}
+
+/** Kalici ceviri onbellegi: profil basina dosya, en fazla 3000 satir. */
+private object DiskCache {
+    private const val MAX = 3000
+    private var key = ""
+    private val map = LinkedHashMap<String, String>(256, 0.75f, true)
+    private var dirty = 0
+    private val exec = Executors.newSingleThreadExecutor()
+
+    private fun file(c: Context, k: String) =
+        File(c.filesDir, "onbellek_" + Integer.toHexString(k.hashCode()) + ".json")
+
+    @Synchronized
+    fun use(c: Context, k: String) {
+        if (k == key) return
+        flush(c)
+        key = k
+        map.clear()
+        try {
+            val f = file(c, k)
+            if (f.exists()) {
+                val o = JSONObject(f.readText())
+                val it = o.keys()
+                while (it.hasNext()) {
+                    val n = it.next()
+                    map[n] = o.getString(n)
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** (yapay zeka cevirisi mi, metin) */
+    @Synchronized
+    fun get(n: String): Pair<Boolean, String>? {
+        val v = map[n] ?: return null
+        return v.startsWith("g|") to v.substring(2)
+    }
+
+    @Synchronized
+    fun put(c: Context, n: String, out: String, ai: Boolean) {
+        val old = map[n]
+        if (!ai && old != null && old.startsWith("g|")) return // Gemini cevirisini yerel ceviriyle ezme
+        map[n] = (if (ai) "g|" else "l|") + out
+        while (map.size > MAX) {
+            val first = map.keys.iterator().next()
+            map.remove(first)
+        }
+        if (++dirty >= 5) flush(c)
+    }
+
+    @Synchronized
+    fun flush(c: Context) {
+        if (dirty == 0 || key.isEmpty()) return
+        dirty = 0
+        val o = JSONObject()
+        for ((k, v) in map) o.put(k, v)
+        val text = o.toString()
+        val f = file(c.applicationContext, key)
+        exec.execute { try { f.writeText(text) } catch (_: Exception) {} }
     }
 }

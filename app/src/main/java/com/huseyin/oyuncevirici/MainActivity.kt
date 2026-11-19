@@ -36,6 +36,7 @@ class MainActivity : Activity() {
     private lateinit var profileSpin: Spinner
     private lateinit var profileName: EditText
     private lateinit var glossaryEdit: EditText
+    private lateinit var toneEdit: EditText
     private var pendingPs5 = false
     private var profileList: List<GameProfile> = emptyList()
 
@@ -100,6 +101,12 @@ class MainActivity : Activity() {
             setText(Prefs.glossary(this@MainActivity))
         }
         root.addView(glossaryEdit)
+        toneEdit = EditText(this).apply {
+            hint = "Oyun / üslup (örn. Vahşi Batı, kovboy argosu)"
+            isSingleLine = true
+            setText(Prefs.tone(this@MainActivity))
+        }
+        root.addView(toneEdit)
         root.addView(TextView(this).apply {
             textSize = 13f
             text = "Sadece isim yazarsan çevrilmez, \"A = B\" yazarsan A her zaman B olarak çevrilir. Sözlük Gemini ile çalışır. " +
@@ -225,6 +232,26 @@ class MainActivity : Activity() {
             isSingleLine = true
         }
         root.addView(keyEdit)
+        val models = Gemini.MODELS + ("" to "Özel (aşağıya kendin yaz)")
+        root.addView(Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, models.map { "Model: " + it.second })
+            val cur = Prefs.geminiModel(this@MainActivity)
+            val idx = models.indexOfFirst { it.first == cur }
+            setSelection(if (idx >= 0) idx else models.size - 1, false)
+            post {
+                onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                        val m = models[pos].first
+                        if (m.isNotEmpty()) {
+                            Prefs.setGeminiModel(this@MainActivity, m)
+                            modelEdit.setText(m)
+                            updateStatus()
+                        }
+                    }
+                    override fun onNothingSelected(p: AdapterView<*>?) {}
+                }
+            }
+        })
         root.addView(modelEdit)
         root.addView(button("Anahtarı kaydet ve dene") {
             Prefs.setGeminiKey(this, keyEdit.text.toString())
@@ -239,6 +266,11 @@ class MainActivity : Activity() {
         })
 
         root.addView(CheckBox(this).apply {
+            text = "Akıllı ekranda görüntüyü doğrudan Gemini'ye gönder (süslü fontlarda, notlarda, mektuplarda çok daha doğru okur)"
+            isChecked = Prefs.visionSmart(this@MainActivity)
+            setOnCheckedChangeListener { _, b -> Prefs.setVisionSmart(this@MainActivity, b) }
+        })
+        root.addView(CheckBox(this).apply {
             text = "Hızlı önizleme: önce telefonun çevirisini hemen göster, Gemini'ninki gelince değiştir (dil paketi indirilmiş olmalı)"
             isChecked = Prefs.preview(this@MainActivity)
             setOnCheckedChangeListener { _, b -> Prefs.setPreview(this@MainActivity, b) }
@@ -250,6 +282,22 @@ class MainActivity : Activity() {
             text = "Butona dokununca CANLI çeviri başlasın (yazı değiştikçe kendiliğinden çevirir, tekrar dokununca durur)"
             isChecked = Prefs.tapLive(this@MainActivity)
             setOnCheckedChangeListener { _, b -> Prefs.setTapLive(this@MainActivity, b) }
+        })
+        val speeds = listOf("Tarama hızı: Çok hızlı (0,4 sn)" to 400, "Tarama hızı: Hızlı (0,6 sn)" to 600,
+            "Tarama hızı: Normal (0,8 sn)" to 800, "Tarama hızı: Pil dostu (1,2 sn)" to 1200)
+        root.addView(Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, speeds.map { it.first })
+            setSelection(speeds.indexOfFirst { it.second == Prefs.scanMs(this@MainActivity) }.coerceAtLeast(2))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
+                    Prefs.setScanMs(this@MainActivity, speeds[pos].second)
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        })
+        root.addView(CheckBox(this).apply {
+            text = "Harf harf beliren altyazılarda yazının tamamlanmasını bekle (kapatırsan daha hızlı ama yarım cümleler çevrilebilir)"
+            isChecked = Prefs.waitStable(this@MainActivity)
+            setOnCheckedChangeListener { _, b -> Prefs.setWaitStable(this@MainActivity, b) }
         })
         root.addView(CheckBox(this).apply {
             text = "Çeviriyi Türkçe sesli oku"
@@ -313,6 +361,7 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         if (::glossaryEdit.isInitialized) Prefs.setGlossary(this, glossaryEdit.text.toString())
+        if (::toneEdit.isInitialized) Prefs.setTone(this, toneEdit.text.toString())
         TvLink.onStatus = null
     }
 
@@ -352,7 +401,7 @@ class MainActivity : Activity() {
         }
         status.text = "Gemini deneniyor…"
         Gemini.translate(
-            key, Prefs.geminiModel(this), "İngilizce", "",
+            GCfg(key, Prefs.geminiModel(this), "İngilizce"),
             "Stay close, partner. The bandits are hiding behind those rocks.", emptyList()
         ) { out, err ->
             if (out != null) {
@@ -450,6 +499,7 @@ class MainActivity : Activity() {
                     Prefs.applyProfile(this@MainActivity, prof)
                     profileName.setText(prof?.name ?: "")
                     glossaryEdit.setText(Prefs.glossary(this@MainActivity))
+                    toneEdit.setText(Prefs.tone(this@MainActivity))
                     spinner.setSelection(LANGS.indexOfFirst { it.first == Prefs.lang(this@MainActivity) }.coerceAtLeast(0))
                     updateStatus()
                 }
@@ -461,6 +511,7 @@ class MainActivity : Activity() {
     private fun saveProfile() {
         val name = profileName.text.toString().trim()
         Prefs.setGlossary(this, glossaryEdit.text.toString())
+        Prefs.setTone(this, toneEdit.text.toString())
         if (name.isEmpty()) {
             Toast.makeText(this, "Sözlük kaydedildi. Profil için bir ad yaz.", Toast.LENGTH_SHORT).show()
             return

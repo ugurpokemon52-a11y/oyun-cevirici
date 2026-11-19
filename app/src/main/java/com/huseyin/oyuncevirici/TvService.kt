@@ -119,9 +119,15 @@ class TvService : Service() {
         try {
             s.tcpNoDelay = true
             val r = s.getInputStream().bufferedReader(Charsets.UTF_8)
+            val w = s.getOutputStream().bufferedWriter(Charsets.UTF_8)
             while (true) {
                 val line = r.readLine() ?: break
                 val o = try { JSONObject(line) } catch (e: Exception) { continue }
+                if (o.optString("t") == "ping") {
+                    w.write("{\"t\":\"pong\"}\n")
+                    w.flush()
+                    continue
+                }
                 main.post { apply(o) }
             }
         } catch (_: Exception) {

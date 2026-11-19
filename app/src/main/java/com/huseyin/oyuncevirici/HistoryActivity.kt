@@ -65,7 +65,7 @@ class HistoryActivity : Activity() {
                 }
                 val it = items[position]
                 val sb = SpannableStringBuilder()
-                sb.append(SubFormat.styled(it.out).toString())
+                sb.append(SubFormat.styled(it.out, light = true))
                 sb.append("\n")
                 val s = sb.length
                 sb.append(it.src.replace("\n", " "))

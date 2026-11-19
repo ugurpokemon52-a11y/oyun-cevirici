@@ -138,7 +138,7 @@ class CameraActivity : ComponentActivity() {
 
         engine = LiveEngine(
             this,
-            onShow = { s -> out.text = s; out.visibility = View.VISIBLE },
+            onShow = { s -> out.text = SubFormat.styled(s); out.visibility = View.VISIBLE },
             onClear = { out.text = ""; out.visibility = View.GONE },
         )
         if (Prefs.speak(this)) engine.initTts()
@@ -214,7 +214,7 @@ class CameraActivity : ComponentActivity() {
     private fun analyze(img: ImageProxy) {
         try {
             val now = SystemClock.elapsedRealtime()
-            if (!userRunning || !visible || engine.busy || now - lastAt < 600) return
+            if (!userRunning || !visible || engine.busy || now - lastAt < max(300, Prefs.scanMs(this) - 200)) return
             lastAt = now
             val raw = img.toBitmap()
             val rot = img.imageInfo.rotationDegrees
