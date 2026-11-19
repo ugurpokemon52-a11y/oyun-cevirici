@@ -23,7 +23,18 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Imza sifresini kontrol et
+        env:
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: |
+          if [ -z "$KEYSTORE_PASS" ]; then
+            echo "::error::KEYSTORE_PASS gizli ayari yok. Settings > Secrets and variables > Actions > New repository secret"
+            exit 1
+          fi
+
       - name: APK derle
+        env:
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
         run: gradle assembleMobilRelease assembleTvRelease --no-daemon --stacktrace
 
       - name: APK'yi adlandir

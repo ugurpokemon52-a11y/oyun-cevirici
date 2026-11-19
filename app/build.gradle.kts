@@ -29,22 +29,25 @@ android {
         }
     }
 
+    // Imza dosyasinin sifresi depoda DEGIL, GitHub'in gizli ayarlarinda (KEYSTORE_PASS).
+    val ksPass = System.getenv("KEYSTORE_PASS")
     signingConfigs {
-        create("sabit") {
-            storeFile = file("cevirici.keystore")
-            storePassword = "cevirici123"
-            keyAlias = "cevirici"
-            keyPassword = "cevirici123"
+        if (!ksPass.isNullOrBlank()) {
+            create("sabit") {
+                storeFile = file("imza.p12")
+                storePassword = ksPass
+                keyAlias = "cevirici"
+                keyPassword = ksPass
+            }
         }
     }
 
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("sabit")
-        }
-        getByName("debug") {
-            signingConfig = signingConfigs.getByName("sabit")
+            // Sifre yoksa (yerel derleme) hata ayiklama imzasiyla imzalanir
+            signingConfig = if (!ksPass.isNullOrBlank()) signingConfigs.getByName("sabit")
+            else signingConfigs.getByName("debug")
         }
     }
 
