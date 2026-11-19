@@ -15,7 +15,9 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -31,6 +33,11 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var spinner: Spinner
     private lateinit var tvLine: TextView
+    private lateinit var profileSpin: Spinner
+    private lateinit var profileName: EditText
+    private lateinit var glossaryEdit: EditText
+    private var pendingPs5 = false
+    private var profileList: List<GameProfile> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,6 +68,48 @@ class MainActivity : Activity() {
             override fun onNothingSelected(p: AdapterView<*>?) {}
         }
         root.addView(spinner)
+
+        // ---- PS5 tek dokunus ----
+        root.addView(header("🎮 PS5 (Remote Play ile)", pad))
+        root.addView(Button(this).apply {
+            text = "▶  PS5 modunu başlat"
+            isAllCaps = false
+            textSize = 19f
+            setOnClickListener { startCapture(ps5 = true) }
+        })
+        root.addView(TextView(this).apply {
+            textSize = 13f
+            text = "Ekran yakalamayı başlatır, PS Remote Play'i açar ve canlı çeviriyi kendiliğinden açar. " +
+                "Çeviriler TV'deki Oyun Çevirici'de oyunun üstünde görünür. İlk seferde butona basılı tutup 'Bölge seç' ile altyazı alanını çiz."
+        })
+        root.addView(button("📜  Altyazı geçmişi") { startActivity(Intent(this, HistoryActivity::class.java)) })
+
+        // ---- Oyun profili ----
+        root.addView(header("🗂️ Oyun profili ve isim sözlüğü", pad))
+        profileSpin = Spinner(this)
+        root.addView(profileSpin)
+        profileName = EditText(this).apply {
+            hint = "Profil adı (örn. RDR2)"
+            isSingleLine = true
+        }
+        root.addView(profileName)
+        glossaryEdit = EditText(this).apply {
+            hint = "İsim sözlüğü – her satıra bir tane:\nArthur Morgan\nDead Eye = Ölü Göz"
+            minLines = 3
+            gravity = Gravity.TOP or Gravity.START
+            setText(Prefs.glossary(this@MainActivity))
+        }
+        root.addView(glossaryEdit)
+        root.addView(TextView(this).apply {
+            textSize = 13f
+            text = "Sadece isim yazarsan çevrilmez, \"A = B\" yazarsan A her zaman B olarak çevrilir. Sözlük Gemini ile çalışır. " +
+                "Profil; dili, altyazı bölgesini ve sözlüğü birlikte saklar."
+        })
+        val prow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        prow.addView(button("💾 Kaydet") { saveProfile() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        prow.addView(button("🗑️ Sil") { deleteProfile() }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(prow)
+        refreshProfiles()
 
         // ---- Konsol + TV ----
         root.addView(header("🎮 Konsol + TV (kamera modu)", pad))
@@ -109,6 +158,36 @@ class MainActivity : Activity() {
             }
         }
         root.addView(posSpin)
+        val bgs = listOf("Arka plan: Açık" to 0x66, "Arka plan: Orta" to 0xAA, "Arka plan: Koyu" to 0xCC, "Arka plan: Tam koyu" to 0xF0)
+        root.addView(Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, bgs.map { it.first })
+            setSelection(bgs.indexOfFirst { it.second == Prefs.tvBg(this@MainActivity) }.coerceAtLeast(2))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
+                    Prefs.setTvBg(this@MainActivity, bgs[pos].second)
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        })
+        val margins = listOf("Kenardan uzaklık: Az" to 16, "Kenardan uzaklık: Orta" to 40, "Kenardan uzaklık: Çok" to 90)
+        root.addView(Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, margins.map { it.first })
+            setSelection(margins.indexOfFirst { it.second == Prefs.tvMargin(this@MainActivity) }.coerceAtLeast(1))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
+                    Prefs.setTvMargin(this@MainActivity, margins[pos].second)
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        })
+        root.addView(CheckBox(this).apply {
+            text = "Kalın yazı"
+            isChecked = Prefs.tvBold(this@MainActivity)
+            setOnCheckedChangeListener { _, b -> Prefs.setTvBold(this@MainActivity, b) }
+        })
+        root.addView(CheckBox(this).apply {
+            text = "Orijinal (İngilizce) metni de altında küçük göster"
+            isChecked = Prefs.tvOrig(this@MainActivity)
+            setOnCheckedChangeListener { _, b -> Prefs.setTvOrig(this@MainActivity, b) }
+        })
         root.addView(button("TV adresini kaydet ve deneme altyazısı gönder") {
             if (hostEdit.text.toString().trim() != Prefs.tvHost(this)) {
                 Prefs.setTvHost(this, hostEdit.text.toString())
@@ -159,6 +238,12 @@ class MainActivity : Activity() {
                 "Yazı değişmedikçe tekrar istek gönderilmez, kota az harcanır."
         })
 
+        root.addView(CheckBox(this).apply {
+            text = "Hızlı önizleme: önce telefonun çevirisini hemen göster, Gemini'ninki gelince değiştir (dil paketi indirilmiş olmalı)"
+            isChecked = Prefs.preview(this@MainActivity)
+            setOnCheckedChangeListener { _, b -> Prefs.setPreview(this@MainActivity, b) }
+        })
+
         // ---- Calisma sekli ----
         root.addView(header("Çalışma şekli", pad))
         root.addView(CheckBox(this).apply {
@@ -179,7 +264,7 @@ class MainActivity : Activity() {
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
             )
         })
-        root.addView(button("3) Çeviriciyi başlat") { startCapture() })
+        root.addView(button("3) Çeviriciyi başlat") { startCapture(false) })
         root.addView(button("Durdur") {
             if (OverlayService.running) {
                 startService(Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_STOP))
@@ -227,6 +312,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        if (::glossaryEdit.isInitialized) Prefs.setGlossary(this, glossaryEdit.text.toString())
         TvLink.onStatus = null
     }
 
@@ -266,7 +352,7 @@ class MainActivity : Activity() {
         }
         status.text = "Gemini deneniyor…"
         Gemini.translate(
-            key, Prefs.geminiModel(this), "İngilizce",
+            key, Prefs.geminiModel(this), "İngilizce", "",
             "Stay close, partner. The bandits are hiding behind those rocks.", emptyList()
         ) { out, err ->
             if (out != null) {
@@ -296,13 +382,14 @@ class MainActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun startCapture() {
+    private fun startCapture(ps5: Boolean = false) {
+        pendingPs5 = ps5
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "Önce 2. adımdaki izni ver", Toast.LENGTH_LONG).show()
             return
         }
         if (OverlayService.running) {
-            Toast.makeText(this, "Zaten çalışıyor", Toast.LENGTH_SHORT).show()
+            if (ps5) openRemotePlay() else Toast.makeText(this, "Zaten çalışıyor", Toast.LENGTH_SHORT).show()
             return
         }
         val mpm = getSystemService(MediaProjectionManager::class.java)
@@ -321,12 +408,81 @@ class MainActivity : Activity() {
         val i = Intent(this, OverlayService::class.java)
             .putExtra(OverlayService.EXTRA_CODE, resultCode)
             .putExtra(OverlayService.EXTRA_DATA, data)
+            .putExtra(OverlayService.EXTRA_PS5, pendingPs5)
         startForegroundService(i)
-        Toast.makeText(this, "Hazır! Oyunu aç ve mavi butona dokun.", Toast.LENGTH_LONG).show()
-        moveTaskToBack(true)
+        if (pendingPs5) {
+            status.postDelayed({ openRemotePlay() }, 700)
+        } else {
+            Toast.makeText(this, "Hazır! Oyunu aç ve mavi butona dokun.", Toast.LENGTH_LONG).show()
+            moveTaskToBack(true)
+        }
+    }
+
+    private fun openRemotePlay() {
+        val li = packageManager.getLaunchIntentForPackage(REMOTE_PLAY_PKG)
+        if (li == null) {
+            Toast.makeText(this, "PS Remote Play yüklü değil. Play Store'dan kur, sonra tekrar dene.", Toast.LENGTH_LONG).show()
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$REMOTE_PLAY_PKG")))
+            } catch (_: Exception) {
+            }
+            return
+        }
+        Toast.makeText(this, "PS5 modu açık. Canlı çeviri birkaç saniye içinde başlar.", Toast.LENGTH_LONG).show()
+        startActivity(li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    // ---------------- Profiller ----------------
+
+    private fun refreshProfiles() {
+        profileList = Prefs.profiles(this)
+        val names = listOf("— Profil yok —") + profileList.map { it.name }
+        profileSpin.onItemSelectedListener = null
+        profileSpin.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
+        val active = Prefs.activeProfile(this)
+        val idx = profileList.indexOfFirst { it.name == active }
+        profileSpin.setSelection(if (idx >= 0) idx + 1 else 0, false)
+        profileName.setText(active)
+        profileSpin.post {
+            profileSpin.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    val prof = if (pos == 0) null else profileList.getOrNull(pos - 1)
+                    Prefs.applyProfile(this@MainActivity, prof)
+                    profileName.setText(prof?.name ?: "")
+                    glossaryEdit.setText(Prefs.glossary(this@MainActivity))
+                    spinner.setSelection(LANGS.indexOfFirst { it.first == Prefs.lang(this@MainActivity) }.coerceAtLeast(0))
+                    updateStatus()
+                }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        }
+    }
+
+    private fun saveProfile() {
+        val name = profileName.text.toString().trim()
+        Prefs.setGlossary(this, glossaryEdit.text.toString())
+        if (name.isEmpty()) {
+            Toast.makeText(this, "Sözlük kaydedildi. Profil için bir ad yaz.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Prefs.saveCurrentAsProfile(this, name)
+        refreshProfiles()
+        Toast.makeText(this, "Profil kaydedildi: $name", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun deleteProfile() {
+        val name = Prefs.activeProfile(this)
+        if (name.isEmpty()) {
+            Toast.makeText(this, "Silinecek profil seçili değil", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Prefs.deleteProfile(this, name)
+        refreshProfiles()
+        Toast.makeText(this, "Silindi: $name", Toast.LENGTH_SHORT).show()
     }
 
     companion object {
+        private const val REMOTE_PLAY_PKG = "com.playstation.remoteplay"
         private const val REQ_CAPTURE = 1
     }
 }

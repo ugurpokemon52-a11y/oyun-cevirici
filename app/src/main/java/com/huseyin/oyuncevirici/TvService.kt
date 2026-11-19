@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.net.nsd.NsdManager
@@ -16,16 +17,21 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.util.DisplayMetrics
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.TextView
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
+import kotlin.math.max
 
 /** TV tarafi: telefondan gelen altyazilari oyun goruntusunun ustunde gosterir. */
 class TvService : Service() {
@@ -123,14 +129,19 @@ class TvService : Service() {
             try { s.close() } catch (_: Exception) {}
             val left = clients.decrementAndGet()
             notifyStatus()
-            if (left <= 0) main.post { hideSub() }
+            if (left <= 0) main.post { hideSub(); hideSmart() }
         }
     }
 
     private fun apply(o: JSONObject) {
         when (o.optString("t")) {
-            "sub" -> showSub(o.optString("text"), o.optInt("size", 30), o.optString("pos", "bottom"))
+            "sub" -> showSub(
+                o.optString("text"), o.optInt("size", 30), o.optString("pos", "bottom"),
+                o.optInt("bg", 0xCC), o.optInt("margin", 40), o.optBoolean("bold", false), o.optString("orig", "")
+            )
             "clear" -> hideSub()
+            "smart" -> showSmart(o.optJSONArray("items"))
+            "smartclear" -> hideSmart()
         }
     }
 
@@ -157,7 +168,10 @@ class TvService : Service() {
 
     // ---------------- Ekranda gosterme ----------------
 
-    private fun showSub(text: String, sizeSp: Int, pos: String) {
+    private fun showSub(
+        text: String, sizeSp: Int, pos: String,
+        bg: Int = 0xCC, marginDp: Int = 40, bold: Boolean = false, orig: String = ""
+    ) {
         if (text.isBlank()) {
             hideSub(); return
         }
@@ -170,10 +184,6 @@ class TvService : Service() {
                 setTextColor(Color.WHITE)
                 gravity = Gravity.CENTER
                 setShadowLayer(4f, 0f, 0f, Color.BLACK)
-                background = GradientDrawable().apply {
-                    cornerRadius = 10 * d
-                    setColor(0xCC000000.toInt())
-                }
                 val p = (14 * d).toInt()
                 setPadding(p * 2, p, p * 2, p)
                 maxWidth = (resources.displayMetrics.widthPixels * 0.85f).toInt()
@@ -187,7 +197,7 @@ class TvService : Service() {
                 PixelFormat.TRANSLUCENT
             )
             lp.gravity = grav
-            lp.y = (40 * d).toInt()
+            lp.y = (marginDp * d).toInt()
             try {
                 wm.addView(tv, lp)
             } catch (e: Exception) {
@@ -197,13 +207,20 @@ class TvService : Service() {
             subLp = lp
         } else {
             val lp = subLp
-            if (lp != null && lp.gravity != grav) {
+            val y = (marginDp * d).toInt()
+            if (lp != null && (lp.gravity != grav || lp.y != y)) {
                 lp.gravity = grav
+                lp.y = y
                 try { wm.updateViewLayout(tv, lp) } catch (_: Exception) {}
             }
         }
+        tv.background = GradientDrawable().apply {
+            cornerRadius = 10 * d
+            setColor((bg.coerceIn(0, 255) shl 24) or 0x000000)
+        }
+        tv.setTypeface(null, if (bold) Typeface.BOLD else Typeface.NORMAL)
         tv.textSize = sizeSp.coerceIn(16, 60).toFloat()
-        tv.text = text
+        tv.text = SubFormat.styled(text, orig.ifBlank { null })
         // Telefon baglantisi kopar da "temizle" gelmezse ekranda kalmasin
         main.removeCallbacks(autoHide)
         main.postDelayed(autoHide, 45000)
@@ -216,6 +233,72 @@ class TvService : Service() {
         subLp = null
     }
 
+    // ---------------- Akilli ekran ----------------
+
+    private var smart: FrameLayout? = null
+    private val smartHide = Runnable { hideSmart() }
+
+    private fun showSmart(items: JSONArray?) {
+        hideSmart()
+        if (items == null || items.length() == 0 || !Settings.canDrawOverlays(this)) return
+        val d = resources.displayMetrics.density
+        val root = FrameLayout(this)
+        val lp = WindowManager.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.TOP or Gravity.START
+        try {
+            wm.addView(root, lp)
+        } catch (e: Exception) {
+            return
+        }
+        smart = root
+        root.post {
+            val dm = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            wm.defaultDisplay.getRealMetrics(dm)
+            val W = dm.widthPixels.toFloat()
+            val H = dm.heightPixels.toFloat()
+            val loc = IntArray(2)
+            root.getLocationOnScreen(loc)
+            for (i in 0 until items.length()) {
+                val it = items.optJSONObject(i) ?: continue
+                val tv = TextView(this).apply {
+                    text = SubFormat.styled(it.optString("text"))
+                    setTextColor(Color.WHITE)
+                    background = GradientDrawable().apply {
+                        cornerRadius = 6 * d
+                        setColor(0xEE141414.toInt())
+                        setStroke((1 * d).toInt(), 0xFF64B5F6.toInt())
+                    }
+                    val p = (6 * d).toInt()
+                    setPadding(p, p / 2, p, p / 2)
+                    val lh = it.optDouble("lh", 0.03).toFloat() * H
+                    setTextSize(TypedValue.COMPLEX_UNIT_PX, (lh * 0.72f).coerceIn(13 * d, 36 * d))
+                }
+                val w = max((it.optDouble("w", 0.2) * W).toInt(), (200 * d).toInt()).coerceAtMost(root.width)
+                val flp = FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT)
+                flp.leftMargin = ((it.optDouble("x") * W).toInt() - loc[0]).coerceIn(0, max(0, root.width - w))
+                flp.topMargin = ((it.optDouble("y") * H).toInt() - loc[1]).coerceIn(0, max(0, root.height - (30 * d).toInt()))
+                root.addView(tv, flp)
+            }
+        }
+        main.removeCallbacks(smartHide)
+        main.postDelayed(smartHide, 60000)
+    }
+
+    private fun hideSmart() {
+        main.removeCallbacks(smartHide)
+        smart?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        smart = null
+    }
+
     private fun notifyStatus() {
         main.post { onStatus?.invoke() }
     }
@@ -223,6 +306,7 @@ class TvService : Service() {
     override fun onDestroy() {
         running = false
         hideSub()
+        hideSmart()
         regListener?.let { try { nsd?.unregisterService(it) } catch (_: Exception) {} }
         try { server?.close() } catch (_: Exception) {}
         server = null

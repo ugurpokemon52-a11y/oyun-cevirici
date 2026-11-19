@@ -48,8 +48,17 @@ class LiveEngine(
     private var ttsReady = false
     private var lastAiErrorAt = 0L
 
+    private var glossaryUsed = ""
+    private var seqNo = 0
+    private var finalSeq = -1
+
     fun ensureMl() {
         val l = Prefs.lang(ctx)
+        val g = Prefs.glossary(ctx)
+        if (g != glossaryUsed) {
+            glossaryUsed = g
+            cache.clear()
+        }
         if (l == lang && recognizer != null && translator != null) return
         recognizer?.close()
         translator?.close()
@@ -110,27 +119,83 @@ class LiveEngine(
         }
         lastShown = src
         pending = ""
+        val seq = ++seqNo
         cache[n]?.let {
             busy = false
-            show(it)
+            show(it, src, final = true)
+            finalSeq = seq
             return
         }
-        translateOne(src) { out, _ ->
+
+        if (Prefs.useGemini(ctx)) {
+            // 1) Hizli onizleme: cihaz ici ceviri hemen ekrana
+            var previewText: String? = null
+            if (Prefs.preview(ctx)) {
+                localQuiet(src) { quick ->
+                    if (quick != null && seq == seqNo && finalSeq != seq) {
+                        previewText = quick
+                        show(quick, src, final = false)
+                    }
+                }
+            }
+            // 2) Gemini cevirisi gelince onizlemenin yerine gecer
+            Gemini.translate(
+                Prefs.geminiKey(ctx), Prefs.geminiModel(ctx), Prefs.langName(ctx), Prefs.glossary(ctx),
+                src, history.toList()
+            ) { out, err ->
+                if (out != null) {
+                    cache[n] = out
+                    remember(src)
+                    if (seq == seqNo) {
+                        finalSeq = seq
+                        show(out, src, final = true)
+                    }
+                } else {
+                    aiError(err)
+                    if (seq != seqNo) return@translate
+                    val p = previewText
+                    if (p != null) {
+                        finalSeq = seq
+                        show(p, src, final = true)
+                    } else {
+                        localOne(src) { o, _ ->
+                            if (o != null && seq == seqNo) {
+                                finalSeq = seq
+                                show(o, src, final = true)
+                            }
+                        }
+                    }
+                }
+            }
+            // Gemini beklenirken yeni kareler islenebilsin
             busy = false
-            if (out != null) {
-                cache[n] = out
-                history.addLast(src)
-                while (history.size > 3) history.removeFirst()
-                show(out)
+        } else {
+            localOne(src) { out, _ ->
+                busy = false
+                if (out != null) {
+                    cache[n] = out
+                    remember(src)
+                    finalSeq = seq
+                    show(out, src, final = true)
+                }
             }
         }
     }
 
-    fun show(s: String) {
+    private fun remember(src: String) {
+        history.addLast(src)
+        while (history.size > 3) history.removeFirst()
+    }
+
+    /** final=false: hizli onizleme (sesli okunmaz, gecmise yazilmaz) */
+    fun show(s: String, src: String, final: Boolean) {
         showing = true
         onShow(s)
-        if (Prefs.speak(ctx)) speak(s)
-        TvLink.sendSub(ctx, s)
+        TvLink.sendSub(ctx, s, src)
+        if (final) {
+            if (Prefs.speak(ctx)) speak(s)
+            History.add(ctx, src, s)
+        }
     }
 
     fun clear() {
@@ -151,7 +216,7 @@ class LiveEngine(
 
     fun translateMany(srcs: List<String>, cb: (List<String>?, String?) -> Unit) {
         if (Prefs.useGemini(ctx)) {
-            Gemini.translateList(Prefs.geminiKey(ctx), Prefs.geminiModel(ctx), Prefs.langName(ctx), srcs) { list, err ->
+            Gemini.translateList(Prefs.geminiKey(ctx), Prefs.geminiModel(ctx), Prefs.langName(ctx), Prefs.glossary(ctx), srcs) { list, err ->
                 if (list != null) cb(list, null) else {
                     aiError(err)
                     localMany(srcs, cb)
@@ -173,19 +238,14 @@ class LiveEngine(
             }
     }
 
-    private fun translateOne(src: String, cb: (String?, String?) -> Unit) {
-        if (Prefs.useGemini(ctx)) {
-            Gemini.translate(
-                Prefs.geminiKey(ctx), Prefs.geminiModel(ctx), Prefs.langName(ctx), src, history.toList()
-            ) { out, err ->
-                if (out != null) cb(out, null) else {
-                    aiError(err)
-                    localOne(src, cb)
-                }
-            }
-        } else {
-            localOne(src, cb)
-        }
+    /** Onizleme icin: hata olursa sessizce null (dil paketi yoksa kullaniciyi rahatsiz etmez) */
+    private fun localQuiet(src: String, cb: (String?) -> Unit) {
+        ensureMl()
+        val tr = translator!!
+        tr.downloadModelIfNeeded()
+            .onSuccessTask { _ -> tr.translate(src) }
+            .addOnSuccessListener { cb(it) }
+            .addOnFailureListener { cb(null) }
     }
 
     private fun localOne(src: String, cb: (String?, String?) -> Unit) {

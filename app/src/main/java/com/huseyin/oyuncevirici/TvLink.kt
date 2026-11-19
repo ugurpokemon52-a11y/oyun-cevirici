@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedWriter
 import java.io.OutputStreamWriter
@@ -189,13 +190,30 @@ object TvLink {
         }
     }
 
-    fun sendSub(ctx: Context, text: String) {
+    fun sendSub(ctx: Context, text: String, original: String = "") {
         if (appCtx == null) appCtx = ctx.applicationContext
-        send(
-            JSONObject().put("t", "sub").put("text", text)
-                .put("size", Prefs.tvSize(ctx)).put("pos", Prefs.tvPos(ctx))
-        )
+        val o = JSONObject().put("t", "sub").put("text", text)
+            .put("size", Prefs.tvSize(ctx)).put("pos", Prefs.tvPos(ctx))
+            .put("bg", Prefs.tvBg(ctx)).put("margin", Prefs.tvMargin(ctx))
+            .put("bold", Prefs.tvBold(ctx))
+        if (Prefs.tvOrig(ctx) && original.isNotBlank()) o.put("orig", original)
+        send(o)
     }
+
+    /** Akilli ekran: yazilar oyun alanina gore oransal konumlarla (0..1) */
+    fun sendSmart(ctx: Context, items: List<SmartItem>) {
+        if (appCtx == null) appCtx = ctx.applicationContext
+        val a = JSONArray()
+        items.forEach {
+            a.put(
+                JSONObject().put("x", it.x.toDouble()).put("y", it.y.toDouble())
+                    .put("w", it.w.toDouble()).put("lh", it.lineH.toDouble()).put("text", it.text)
+            )
+        }
+        send(JSONObject().put("t", "smart").put("items", a))
+    }
+
+    fun sendSmartClear() = send(JSONObject().put("t", "smartclear"))
 
     fun sendClear() = send(JSONObject().put("t", "clear"))
 
@@ -203,3 +221,6 @@ object TvLink {
         main.post { onStatus?.invoke() }
     }
 }
+
+/** Akilli ekrandaki bir yazi blogu; tum degerler oyun alanina oranla (0..1) */
+data class SmartItem(val x: Float, val y: Float, val w: Float, val lineH: Float, val text: String)

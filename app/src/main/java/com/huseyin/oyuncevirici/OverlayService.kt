@@ -13,6 +13,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Point
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.Icon
@@ -57,6 +58,7 @@ class OverlayService : Service() {
         const val ACTION_STOP = "com.huseyin.oyuncevirici.STOP"
         const val EXTRA_CODE = "code"
         const val EXTRA_DATA = "data"
+        const val EXTRA_PS5 = "ps5"
         private const val CHANNEL = "cevirici"
 
         @Volatile
@@ -154,6 +156,10 @@ class OverlayService : Service() {
 
         showFab()
         running = true
+        // PS5 modu: canli ceviriyi kendiliginden baslat
+        if (intent?.getBooleanExtra(EXTRA_PS5, false) == true) {
+            main.postDelayed({ if (!auto && fab != null) toggleAuto() }, 2500)
+        }
         return START_NOT_STICKY
     }
 
@@ -302,9 +308,11 @@ class OverlayService : Service() {
                     toast("Ekran görüntüsü alınamadı, bir saniye sonra tekrar dene")
                     return@post
                 }
-                val (bmp, origin) = cropRegion(full)
+                val game = gameRect(full)
+                val bmp = Bitmap.createBitmap(full, game.left, game.top, game.width(), game.height())
+                val origin = Point(game.left, game.top)
                 engine.recognizer().process(InputImage.fromBitmap(bmp, 0))
-                    .addOnSuccessListener { text -> translateBlocks(text, origin) }
+                    .addOnSuccessListener { text -> translateBlocks(text, origin, game.width(), game.height()) }
                     .addOnFailureListener { e ->
                         done()
                         toast("Yazı okunamadı: ${e.message}")
@@ -313,7 +321,26 @@ class OverlayService : Service() {
         }, if (hadOverlay) 250L else 60L)
     }
 
-    private fun translateBlocks(text: Text, origin: Point) {
+    /**
+     * Oyun goruntusunun alani: Remote Play goruntuyu 16:9 olarak ortalar (kenarlarda siyah bant).
+     * Bu alan TV ekraniyla birebir ortusur, akilli ekran konumlari buna gore hesaplanir.
+     */
+    private fun gameRect(b: Bitmap): Rect {
+        val w = b.width
+        val h = b.height
+        if (w < h) return Rect(0, 0, w, h) // dikey ekran: tamamini kullan
+        return if (w.toFloat() / h > 16f / 9f) {
+            val gw = (h * 16f / 9f).toInt()
+            val x = (w - gw) / 2
+            Rect(x, 0, x + gw, h)
+        } else {
+            val gh = (w * 9f / 16f).toInt()
+            val y = (h - gh) / 2
+            Rect(0, y, w, y + gh)
+        }
+    }
+
+    private fun translateBlocks(text: Text, origin: Point, gw: Int, gh: Int) {
         val blocks = text.textBlocks.filter { it.boundingBox != null && it.text.isNotBlank() }
         if (blocks.isEmpty()) {
             done()
@@ -327,6 +354,15 @@ class OverlayService : Service() {
                 toast("Çeviri hatası: $err")
             } else {
                 showResults(blocks, list, origin)
+                // TV'de ayni yazilari oyunun ustunde, yerlerinde goster
+                val items = blocks.mapIndexedNotNull { i, b ->
+                    val box = b.boundingBox ?: return@mapIndexedNotNull null
+                    SmartItem(
+                        box.left.toFloat() / gw, box.top.toFloat() / gh, box.width().toFloat() / gw,
+                        box.height().toFloat() / max(1, b.lines.size) / gh, list.getOrElse(i) { "" }
+                    )
+                }
+                TvLink.sendSmart(this, items)
             }
         }
     }
@@ -356,7 +392,7 @@ class OverlayService : Service() {
             blocks.forEachIndexed { i, b ->
                 val box = b.boundingBox ?: return@forEachIndexed
                 val tv = TextView(this).apply {
-                    text = tr.getOrElse(i) { "" }
+                    text = SubFormat.styled(tr.getOrElse(i) { "" })
                     setTextColor(Color.WHITE)
                     background = GradientDrawable().apply {
                         cornerRadius = 6 * d
@@ -378,6 +414,7 @@ class OverlayService : Service() {
     }
 
     private fun hideResults() {
+        if (resultView != null) TvLink.sendSmartClear()
         resultView?.let { safeRemove(it) }
         resultView = null
     }
@@ -452,7 +489,7 @@ class OverlayService : Service() {
             }
             subtitleView = tv
         }
-        subtitleView?.text = s
+        subtitleView?.text = SubFormat.styled(s)
     }
 
     private fun removeSubtitle() {
@@ -575,7 +612,7 @@ class OverlayService : Service() {
             })
         }
         item("✏️  Bölge seç (altyazı alanı)") { startRegionSelect() }
-        item("📋  Tek seferlik çevir (tüm yazılar yerinde)") {
+        item("📋  Akıllı ekran: menü/envanter çevir (TV'de de)") {
             hideMenu()
             translateOnce()
         }
@@ -593,6 +630,16 @@ class OverlayService : Service() {
             hideMenu()
             toast(if (on) "Sesli okuma açık" else "Sesli okuma kapalı")
         }
+        val prof = Prefs.activeProfile(this).ifEmpty { "yok" }
+        item("🎮  Oyun profili: $prof") { showProfileMenu() }
+        item("📜  Altyazı geçmişi") {
+            hideMenu()
+            try {
+                startActivity(Intent(this, HistoryActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (_: Exception) {
+                toast("Geçmiş açılamadı")
+            }
+        }
         item("❌  Çeviriciyi kapat") { stopSelf() }
         item("↩️  Vazgeç") { hideMenu() }
 
@@ -600,6 +647,59 @@ class OverlayService : Service() {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             touchable = true
         )
+        lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+        lp.gravity = Gravity.CENTER
+        box.setOnTouchListener { _, e ->
+            if (e.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                hideMenu(); true
+            } else false
+        }
+        try {
+            wm.addView(box, lp)
+            menuView = box
+        } catch (_: Exception) {
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showProfileMenu() {
+        hideMenu()
+        val d = density
+        val list = Prefs.profiles(this)
+        if (list.isEmpty()) {
+            toast("Henüz profil yok. Uygulamada 'Oyun profili' bölümünden oluştur.")
+            return
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = 12 * d
+                setColor(0xF2212121.toInt())
+            }
+            val p = (8 * d).toInt()
+            setPadding(p, p, p, p)
+        }
+        fun row(label: String, action: () -> Unit) {
+            box.addView(TextView(this).apply {
+                text = label
+                setTextColor(Color.WHITE)
+                textSize = 16f
+                val p = (12 * d).toInt()
+                setPadding(p, p, p * 2, p)
+                setOnClickListener { action() }
+            })
+        }
+        val active = Prefs.activeProfile(this)
+        for (p in list) {
+            row((if (p.name == active) "✅  " else "🎮  ") + p.name) {
+                Prefs.applyProfile(this, p)
+                engine.reset()
+                hideMenu()
+                toast("Profil: ${p.name}")
+            }
+        }
+        row("↩️  Vazgeç") { hideMenu() }
+        val lp = overlayParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, touchable = true)
         lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
         lp.gravity = Gravity.CENTER
         box.setOnTouchListener { _, e ->

@@ -16,7 +16,7 @@ object Gemini {
     private val exec = Executors.newFixedThreadPool(2)
     private val main = Handler(Looper.getMainLooper())
 
-    private fun system(langName: String) = """
+    private fun system(langName: String, glossary: String) = """
         Sen video oyunu altyazı çevirmenisin. Kullanıcı sana oyun ekranından OCR ile okunmuş $langName metin gönderir.
         Kurallar:
         - Metni doğal, akıcı ve konuşma diline uygun Türkçeye çevir.
@@ -24,11 +24,25 @@ object Gemini {
         - Karakter, yer ve eşya adlarını çevirme, olduğu gibi bırak.
         - Konuşan karakterin adı satır başındaysa (ör. "Arthur:") koru.
         - Sadece çeviriyi yaz. Açıklama, tırnak veya not ekleme.
-    """.trimIndent()
+    """.trimIndent() + glossaryBlock(glossary)
+
+    /** Kullanicinin sozlugu: "kaynak = hedef" satirlari ya da cevrilmeyecek adlar */
+    private fun glossaryBlock(g: String): String {
+        val lines = g.lines().map { it.trim() }.filter { it.isNotEmpty() }.take(80)
+        if (lines.isEmpty()) return ""
+        val sb = StringBuilder("\n\nSÖZLÜK (bu oyuna özel, kesinlikle uy):\n")
+        for (l in lines) {
+            val i = l.indexOf('=')
+            if (i > 0) sb.append("- \"").append(l.substring(0, i).trim()).append("\" → \"")
+                .append(l.substring(i + 1).trim()).append("\" olarak çevir\n")
+            else sb.append("- \"").append(l).append("\" adını çevirme, aynen yaz\n")
+        }
+        return sb.toString()
+    }
 
     /** Tek metin cevirisi. context: onceki satirlar (sadece baglam icin). */
     fun translate(
-        key: String, model: String, langName: String, text: String, context: List<String>,
+        key: String, model: String, langName: String, glossary: String, text: String, context: List<String>,
         cb: (String?, String?) -> Unit
     ) {
         val user = buildString {
@@ -40,7 +54,7 @@ object Gemini {
             append(text)
         }
         exec.execute {
-            val r = runCatching { call(key, model, system(langName), user, json = false) }
+            val r = runCatching { call(key, model, system(langName, glossary), user, json = false) }
             main.post {
                 r.fold({ cb(it.trim(), null) }, { cb(null, it.message ?: "bilinmeyen hata") })
             }
@@ -49,7 +63,7 @@ object Gemini {
 
     /** Birden fazla parcayi tek istekte cevir (ekrandaki ayri yazi bloklari icin). */
     fun translateList(
-        key: String, model: String, langName: String, items: List<String>,
+        key: String, model: String, langName: String, glossary: String, items: List<String>,
         cb: (List<String>?, String?) -> Unit
     ) {
         val arr = JSONArray()
@@ -58,7 +72,7 @@ object Gemini {
             "Aynı sırada ve aynı sayıda öğe içeren bir JSON string dizisi döndür, başka hiçbir şey yazma.\n" + arr.toString()
         exec.execute {
             val r = runCatching {
-                val out = call(key, model, system(langName), user, json = true)
+                val out = call(key, model, system(langName, glossary), user, json = true)
                 val start = out.indexOf('[')
                 val end = out.lastIndexOf(']')
                 val ja = JSONArray(out.substring(start, end + 1))

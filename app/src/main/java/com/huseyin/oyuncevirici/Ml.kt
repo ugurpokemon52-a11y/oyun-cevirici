@@ -2,6 +2,8 @@ package com.huseyin.oyuncevirici
 
 import android.content.Context
 import android.graphics.RectF
+import org.json.JSONArray
+import org.json.JSONObject
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
@@ -76,6 +78,72 @@ object Prefs {
     fun tvPos(c: Context): String = sp(c).getString("tvPos", "bottom") ?: "bottom"
     fun setTvPos(c: Context, v: String) = sp(c).edit().putString("tvPos", v).apply()
 
+    /** Gemini acikken once cihaz ici ceviriyi hemen goster, sonra Gemini ile duzelt */
+    fun preview(c: Context): Boolean = sp(c).getBoolean("preview", true)
+    fun setPreview(c: Context, v: Boolean) = sp(c).edit().putBoolean("preview", v).apply()
+
+    /** Isim sozlugu: her satir "kaynak = hedef" ya da sadece cevrilmeyecek isim */
+    fun glossary(c: Context): String = sp(c).getString("gloss", "") ?: ""
+    fun setGlossary(c: Context, v: String) = sp(c).edit().putString("gloss", v).apply()
+
+    // TV gorunumu
+    fun tvBg(c: Context): Int = sp(c).getInt("tvBg", 0xCC)
+    fun setTvBg(c: Context, v: Int) = sp(c).edit().putInt("tvBg", v).apply()
+    fun tvMargin(c: Context): Int = sp(c).getInt("tvMargin", 40)
+    fun setTvMargin(c: Context, v: Int) = sp(c).edit().putInt("tvMargin", v).apply()
+    fun tvOrig(c: Context): Boolean = sp(c).getBoolean("tvOrig", false)
+    fun setTvOrig(c: Context, v: Boolean) = sp(c).edit().putBoolean("tvOrig", v).apply()
+    fun tvBold(c: Context): Boolean = sp(c).getBoolean("tvBold", false)
+    fun setTvBold(c: Context, v: Boolean) = sp(c).edit().putBoolean("tvBold", v).apply()
+
+    // ---------------- Oyun profilleri ----------------
+
+    fun profiles(c: Context): MutableList<GameProfile> {
+        val raw = sp(c).getString("profiles", "[]") ?: "[]"
+        return try {
+            val a = JSONArray(raw)
+            MutableList(a.length()) { GameProfile.fromJson(a.getJSONObject(it)) }
+        } catch (e: Exception) {
+            mutableListOf()
+        }
+    }
+
+    fun saveProfiles(c: Context, list: List<GameProfile>) {
+        val a = JSONArray()
+        list.forEach { a.put(it.toJson()) }
+        sp(c).edit().putString("profiles", a.toString()).apply()
+    }
+
+    fun activeProfile(c: Context): String = sp(c).getString("activeProfile", "") ?: ""
+    fun setActiveProfile(c: Context, v: String) = sp(c).edit().putString("activeProfile", v).apply()
+
+    /** Profili sec: dil, bolge ve sozluk gecerli ayar olur */
+    fun applyProfile(c: Context, p: GameProfile?) {
+        if (p == null) {
+            setActiveProfile(c, "")
+            return
+        }
+        setLang(c, p.lang)
+        setRegionRaw(c, p.region)
+        setGlossary(c, p.glossary)
+        setActiveProfile(c, p.name)
+    }
+
+    /** Gecerli ayarlari bu adla profile kaydet (varsa ustune yaz) */
+    fun saveCurrentAsProfile(c: Context, name: String) {
+        val list = profiles(c)
+        val p = GameProfile(name.trim(), lang(c), region(c), glossary(c))
+        val i = list.indexOfFirst { it.name == p.name }
+        if (i >= 0) list[i] = p else list.add(p)
+        saveProfiles(c, list)
+        setActiveProfile(c, p.name)
+    }
+
+    fun deleteProfile(c: Context, name: String) {
+        saveProfiles(c, profiles(c).filter { it.name != name })
+        if (activeProfile(c) == name) setActiveProfile(c, "")
+    }
+
     /** Ceviriyi Turkce sesli oku */
     fun speak(c: Context): Boolean = sp(c).getBoolean("speak", false)
     fun setSpeak(c: Context, v: Boolean) = sp(c).edit().putBoolean("speak", v).apply()
@@ -88,6 +156,20 @@ object Prefs {
     }
 
     fun setRegion(c: Context, r: RectF?) {
+        setRegionRaw(c, r)
+        // Aktif oyun profili varsa bolgeyi ona da kaydet
+        val name = activeProfile(c)
+        if (name.isNotEmpty()) {
+            val list = profiles(c)
+            val i = list.indexOfFirst { it.name == name }
+            if (i >= 0) {
+                list[i] = list[i].copy(region = r?.let { RectF(it) })
+                saveProfiles(c, list)
+            }
+        }
+    }
+
+    private fun setRegionRaw(c: Context, r: RectF?) {
         val e = sp(c).edit()
         if (r == null) {
             e.remove("rl").remove("rt").remove("rr").remove("rb")
@@ -118,4 +200,25 @@ object Ml {
     /** Satir sonlarini birlestir: Japonca/Cincede bosluksuz, digerlerinde bosluklu */
     fun clean(lang: String, s: String): String =
         if (lang == "ja" || lang == "zh") s.replace("\n", "") else s.replace("\n", " ")
+}
+
+data class GameProfile(val name: String, val lang: String, val region: RectF?, val glossary: String) {
+    fun toJson(): JSONObject {
+        val o = JSONObject().put("name", name).put("lang", lang).put("gloss", glossary)
+        if (region != null) {
+            o.put("rl", region.left.toDouble()).put("rt", region.top.toDouble())
+                .put("rr", region.right.toDouble()).put("rb", region.bottom.toDouble())
+        }
+        return o
+    }
+
+    companion object {
+        fun fromJson(o: JSONObject): GameProfile {
+            val r = if (o.has("rl")) RectF(
+                o.getDouble("rl").toFloat(), o.getDouble("rt").toFloat(),
+                o.getDouble("rr").toFloat(), o.getDouble("rb").toFloat()
+            ) else null
+            return GameProfile(o.optString("name"), o.optString("lang", "en"), r, o.optString("gloss", ""))
+        }
+    }
 }
