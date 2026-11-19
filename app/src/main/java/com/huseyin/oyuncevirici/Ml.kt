@@ -50,6 +50,32 @@ object Prefs {
     fun tapLive(c: Context): Boolean = sp(c).getBoolean("tapLive", true)
     fun setTapLive(c: Context, v: Boolean) = sp(c).edit().putBoolean("tapLive", v).apply()
 
+    /** Kamera modundaki yesil kutu (ekran oranlari) */
+    fun camBox(c: Context): RectF {
+        val s = sp(c)
+        return RectF(s.getFloat("cl", 0.08f), s.getFloat("ct", 0.68f), s.getFloat("cr", 0.92f), s.getFloat("cb", 0.92f))
+    }
+    fun setCamBox(c: Context, r: RectF) =
+        sp(c).edit().putFloat("cl", r.left).putFloat("ct", r.top).putFloat("cr", r.right).putFloat("cb", r.bottom).apply()
+
+    fun camZoom(c: Context): Float = sp(c).getFloat("czoom", 0f)
+    fun setCamZoom(c: Context, v: Float) = sp(c).edit().putFloat("czoom", v).apply()
+
+    /** Ceviriyi TV'deki aliciya gonder */
+    fun tvSend(c: Context): Boolean = sp(c).getBoolean("tvSend", true)
+    fun setTvSend(c: Context, v: Boolean) = sp(c).edit().putBoolean("tvSend", v).apply()
+
+    /** Elle girilen TV adresi (bos = otomatik bul) */
+    fun tvHost(c: Context): String = sp(c).getString("tvHost", "") ?: ""
+    fun setTvHost(c: Context, v: String) = sp(c).edit().putString("tvHost", v.trim()).apply()
+
+    fun tvSize(c: Context): Int = sp(c).getInt("tvSize", 30)
+    fun setTvSize(c: Context, v: Int) = sp(c).edit().putInt("tvSize", v).apply()
+
+    /** "bottom" veya "top" */
+    fun tvPos(c: Context): String = sp(c).getString("tvPos", "bottom") ?: "bottom"
+    fun setTvPos(c: Context, v: String) = sp(c).edit().putString("tvPos", v).apply()
+
     /** Ceviriyi Turkce sesli oku */
     fun speak(c: Context): Boolean = sp(c).getBoolean("speak", false)
     fun setSpeak(c: Context, v: Boolean) = sp(c).edit().putBoolean("speak", v).apply()

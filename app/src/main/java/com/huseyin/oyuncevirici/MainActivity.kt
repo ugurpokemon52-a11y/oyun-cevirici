@@ -30,6 +30,7 @@ class MainActivity : Activity() {
 
     private lateinit var status: TextView
     private lateinit var spinner: Spinner
+    private lateinit var tvLine: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,6 +61,64 @@ class MainActivity : Activity() {
             override fun onNothingSelected(p: AdapterView<*>?) {}
         }
         root.addView(spinner)
+
+        // ---- Konsol + TV ----
+        root.addView(header("🎮 Konsol + TV (kamera modu)", pad))
+        root.addView(Button(this).apply {
+            text = "📷  Kamera modunu aç"
+            isAllCaps = false
+            textSize = 18f
+            setOnClickListener { startActivity(Intent(this@MainActivity, CameraActivity::class.java)) }
+        })
+        tvLine = TextView(this).apply { textSize = 14f }
+        root.addView(tvLine)
+        root.addView(CheckBox(this).apply {
+            text = "Çeviriyi TV'deki Oyun Çevirici'ye gönder (oyunun üstünde gösterir)"
+            isChecked = Prefs.tvSend(this@MainActivity)
+            setOnCheckedChangeListener { _, b ->
+                Prefs.setTvSend(this@MainActivity, b)
+                TvLink.restart(this@MainActivity)
+            }
+        })
+        val hostEdit = EditText(this).apply {
+            hint = "TV adresi (boş = otomatik bul, örn. 192.168.1.40)"
+            setText(Prefs.tvHost(this@MainActivity))
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        root.addView(hostEdit)
+        val sizes = listOf("Küçük" to 24, "Orta" to 30, "Büyük" to 38, "Çok büyük" to 46)
+        val sizeSpin = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, sizes.map { "TV yazı boyutu: ${it.first}" })
+            setSelection(sizes.indexOfFirst { it.second == Prefs.tvSize(this@MainActivity) }.coerceAtLeast(1))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
+                    Prefs.setTvSize(this@MainActivity, sizes[pos].second)
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        }
+        root.addView(sizeSpin)
+        val posSpin = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                listOf("TV'de konum: Altta", "TV'de konum: Üstte"))
+            setSelection(if (Prefs.tvPos(this@MainActivity) == "top") 1 else 0)
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
+                    Prefs.setTvPos(this@MainActivity, if (pos == 1) "top" else "bottom")
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        }
+        root.addView(posSpin)
+        root.addView(button("TV adresini kaydet ve deneme altyazısı gönder") {
+            if (hostEdit.text.toString().trim() != Prefs.tvHost(this)) {
+                Prefs.setTvHost(this, hostEdit.text.toString())
+                TvLink.restart(this)
+            } else {
+                TvLink.start(this)
+            }
+            TvLink.sendSub(this, "Deneme altyazısı: telefon bağlı ✓")
+            tvLine.postDelayed({ TvLink.sendClear() }, 6000)
+        })
 
         // ---- Ceviri motoru ----
         root.addView(header("Çeviri türü", pad))
@@ -113,7 +172,7 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, b -> Prefs.setSpeak(this@MainActivity, b) }
         })
 
-        root.addView(header("Başlatma", pad))
+        root.addView(header("📱 Telefonda oynanan oyunlar (ekran yakalama)", pad))
         root.addView(button("1) Dil paketini indir (hızlı çeviri için, ilk seferde)") { downloadModel() })
         root.addView(button("2) Diğer uygulamaların üstünde gösterme izni ver") {
             startActivity(
@@ -160,7 +219,15 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        TvLink.onStatus = { if (::tvLine.isInitialized) tvLine.text = TvLink.status(this) }
+        TvLink.start(this)
+        tvLine.text = TvLink.status(this)
         updateStatus()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        TvLink.onStatus = null
     }
 
     private fun button(label: String, onClick: () -> Unit): Button =
